@@ -78,13 +78,15 @@ def generate_launch_description():
     camera_frame_id = LaunchConfiguration(
         'camera_frame_id', default=p('image_fusion_node', 'camera_frame_id'))
 
-    # CPU 차선주행 모드: lane.pt만 로딩한다. 세 모델을 순차 추론하면 실측 약 0.36 Hz로
-    # 주행 제어에 너무 느리므로 cone/car_back 모델은 GPU 환경에서 다시 활성화한다.
-    # lane.pt(lane_1/lane_2 마스크)는 lane_info_extractor_node가 쓴다.
+    # 콘/드럼 검출과 차선 세그멘테이션을 한 YOLO 노드에서 순차 실행해 결과를 합친다.
+    # best_cone.pt: cone/drum bbox, lane_seg.pt: lane_1/lane_2 mask.
     camera_models_dir = os.path.join(
         get_package_share_directory('camera_perception_pkg'), 'models'
     )
-    model_path = os.path.join(camera_models_dir, 'lane_seg.pt')
+    model_path = ','.join([
+        os.path.join(camera_models_dir, 'best_cone.pt'),
+        os.path.join(camera_models_dir, 'lane_seg.pt'),
+    ])
 
     # bird_eye_node는 lane.pt를 한 번 더 추론하는 '보기용' 노드라, 주행(drive.launch.py)
     # 때는 꺼서 Jetson GPU를 아낀다.

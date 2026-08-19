@@ -43,6 +43,7 @@ def generate_launch_description():
     enable_serial = LaunchConfiguration('enable_serial', default='true')
     lidar_serial_port = LaunchConfiguration('lidar_serial_port')
     arduino_serial_port = LaunchConfiguration('arduino_serial_port')
+    driving_direction = LaunchConfiguration('driving_direction')
     # 판단 노드들을 센서/YOLO가 뜬 뒤에 올리기 위한 지연[s]
     decision_start_delay = LaunchConfiguration('decision_start_delay', default='5.0')
 
@@ -61,7 +62,7 @@ def generate_launch_description():
             executable='lane_info_extractor_node',
             name='lane_info_extractor_node',
             output='screen',
-            parameters=[config_file],
+            parameters=[config_file, {'driving_direction': driving_direction}],
         ),
 
         # 목표점 + 장애물 -> lattice 경로
@@ -100,6 +101,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'arduino_serial_port', default_value='/dev/ttyACM0',
             description='Arduino 제어 시리얼 포트'),
+        DeclareLaunchArgument(
+            'driving_direction', default_value='clockwise',
+            description='주행 방향: clockwise 또는 counterclockwise'),
         DeclareLaunchArgument(
             'enable_serial', default_value=enable_serial,
             description='아두이노로 실제 제어 명령을 보낼지 여부. false면 명령 토픽까지만 확인'),

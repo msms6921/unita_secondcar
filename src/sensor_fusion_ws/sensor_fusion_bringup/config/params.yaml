@@ -150,15 +150,26 @@ lane_info_extractor_node:
     show_image: true           # ROI 디버그 창(Lane Info). 헤드리스로 돌릴 땐 false
 
     # 차선 변경 시 옆 차선까지 이동할 BEV 픽셀 거리. minicar_sim은 200, 실차ws에서는 280을 썼음
-    # 추종할 차선을 고정한다('lane_1'=좌측선 / 'lane_2'=우측선 / ''=자동 판단).
-    # 실측(주행 20초 191프레임): lane_2 단독 91.1%, 둘 다 8.9%, lane_1 단독 0%.
-    # 자동 판단을 돌리면 판정이 흔들릴 때마다 타겟이 lane_width_pixel만큼 튄다.
-    fixed_lane_class: 'lane_2'
+    # 시작 주행 차선. 이후에는 영상 위치 판정이 아니라 장애물 회피가 완료될 때만
+    # lane_2 -> lane_1 -> lane_2 순서로 내부 주행 차선을 변경한다.
+    initial_lane_class: 'lane_2'
 
     lane_width_pixel: 280.0
-    # 이 거리[m]보다 가까운 장애물만 회피 대상 (minicar_sim은 2.4)
-    avoidance_trigger_dist: 1.8
-    shift_speed: 20.0          # 프레임당 오프셋 변화량(px). 클수록 차선 변경이 급해짐
+    # clockwise: 오른쪽으로 회피 후 왼쪽 복귀
+    # counterclockwise: 왼쪽으로 회피 후 오른쪽 복귀
+    driving_direction: 'clockwise'
+    # 현재 차선의 새 장애물이 이 거리 안에 들어오면 반대 차선으로 전환한다.
+    avoidance_trigger_dist: 5.0
+    # 방금 본 장애물을 새 장애물로 다시 세지 않기 위한 최소 재무장 시간.
+    avoidance_rearm_sec: 2.0
+    # 장애물이 연속으로 이 시간만큼 clear여야 다음 장애물을 받을 준비를 한다.
+    avoidance_clear_sec: 0.5
+    # 콘이 계속 보이더라도 라이다 거리가 이만큼 증가하면 다음 콘으로 바뀐 것으로 판단한다.
+    new_obstacle_jump_dist: 0.4
+    # YOLO 프레임 수와 무관하게 이 시간 안에 회피 차선 목표 오프셋을 만든다.
+    lane_change_duration_sec: 2.0
+    # 이 시간이 지나면 차선 변경 오프셋을 0으로 되돌리고 새 차선 중심을 추종한다.
+    lane_change_settle_sec: 2.0
 
     image_center_x: 320
     # BEV ROI에서 카메라 영상 중앙을 추종 기준으로 사용한다.
@@ -194,7 +205,7 @@ lane_info_extractor_node:
     # 당시 car_center_x(332)보다 42.5px 왼쪽에 고정돼, 조향의 85%가 한쪽으로 쏠렸다.
     # 추정을 42px 오른쪽으로 옮기려면 폭을 84 줄이면 된다 -> 300-84 = 216.
     # BEV 스케일로 독립 계산한 값(약 212)과도 일치한다.
-    lane_width_for_center: 216
+    lane_width_for_center: 176
 
 path_planner_node:
   ros__parameters:
@@ -212,7 +223,8 @@ path_planner_node:
     lane_center_weight: 10.0       # 차선 중앙 유지 가중치
     obstacle_weight: 20.0          # 장애물 회피 가중치
     smoothness_weight: 10.0        # 급조향 경로 감점
-    obstacle_dist_threshold: 2.4   # 이 거리[m]보다 가까울 때만 회피 감점 적용
+    # 차선 변경 상태머신과 중복 회피하지 않도록 lattice의 별도 장애물 감점은 비활성화.
+    obstacle_dist_threshold: 0.0
     path_change_cost: 0.05         # 직전 선택 오프셋에서 멀어질수록 감점(지그재그 억제)
     obstacle_clearance: 40.0       # 장애물과 최소 이격거리(px)
 

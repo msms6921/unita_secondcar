@@ -74,7 +74,7 @@ def generate_launch_description():
         'camera_pitch_deg', default=val(fusion_p, 'cam_pitch_deg'))
 
     # bird_eye_node(보기용 차선 BEV)를 띄울지 여부. drive.launch.py는 false로 넘겨서
-    # lane_seg 추론이 yolov8_node 한 곳에서만 돌게 한다.
+    # cone/drum 검출과 lane_seg 추론이 yolov8_node 한 곳에서 함께 돌게 한다.
     enable_bird_eye = LaunchConfiguration('enable_bird_eye', default='true')
     bird_eye_preview = LaunchConfiguration('bird_eye_preview', default='false')
 

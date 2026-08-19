@@ -30,7 +30,12 @@ ROI_IMAGE_TOPIC_NAME = "/roi_image"
 SHOW_IMAGE = True
 LANE_WIDTH_PIXEL = 200      # 차선 변경 시 옆 차선까지의 BEV 픽셀 거리 (실차ws에서는 280을 씀)
 AVOIDANCE_TRIGGER_DIST = 2.4  # 이 거리[m]보다 가까운 장애물만 회피 대상 (실차ws에서는 1.8)
-SHIFT_SPEED = 20.0          # 프레임당 오프셋 변화량(px). 클수록 차선 변경이 급해짐
+AVOIDANCE_REARM_SEC = 2.0    # 첫 장애물을 두 번째 장애물로 재인식하지 않을 최소 시간
+AVOIDANCE_CLEAR_SEC = 0.5    # 원래 차선이 연속으로 비어 있어야 하는 시간
+NEW_OBSTACLE_JUMP_DIST = 0.4  # 다음 콘으로 대상이 바뀌었다고 볼 거리 증가량[m]
+LANE_CHANGE_DURATION_SEC = 0.8  # 현재 차선에서 회피 차선 목표까지 이동할 시간
+LANE_CHANGE_SETTLE_SEC = 2.0  # 실제 차량이 새 차선에 들어간 뒤 새 차선 중심 추종으로 전환할 시간
+DRIVING_DIRECTION = 'clockwise'  # clockwise=오른쪽 회피, counterclockwise=왼쪽 회피
 IMAGE_CENTER_X = 320
 LANE_1_FAR_LEFT_THRESHOLD = 180
 LANE_2_FAR_RIGHT_THRESHOLD = 460
@@ -59,7 +64,30 @@ class Yolov8InfoExtractor(Node):
         self.lane_width_pixel = float(self.declare_parameter('lane_width_pixel', float(LANE_WIDTH_PIXEL)).value)
         self.avoidance_trigger_dist = float(
             self.declare_parameter('avoidance_trigger_dist', AVOIDANCE_TRIGGER_DIST).value)
-        self.shift_speed = float(self.declare_parameter('shift_speed', SHIFT_SPEED).value)
+        self.avoidance_rearm_sec = float(
+            self.declare_parameter('avoidance_rearm_sec', AVOIDANCE_REARM_SEC).value)
+        self.avoidance_clear_sec = float(
+            self.declare_parameter('avoidance_clear_sec', AVOIDANCE_CLEAR_SEC).value)
+        self.new_obstacle_jump_dist = float(
+            self.declare_parameter(
+                'new_obstacle_jump_dist', NEW_OBSTACLE_JUMP_DIST).value)
+        self.lane_change_duration_sec = max(0.05, float(
+            self.declare_parameter(
+                'lane_change_duration_sec', LANE_CHANGE_DURATION_SEC).value))
+        self.lane_change_settle_sec = max(self.lane_change_duration_sec, float(
+            self.declare_parameter(
+                'lane_change_settle_sec', LANE_CHANGE_SETTLE_SEC).value))
+        self.driving_direction = str(
+            self.declare_parameter('driving_direction', DRIVING_DIRECTION).value
+        ).strip().lower()
+        if self.driving_direction not in ('clockwise', 'counterclockwise'):
+            self.get_logger().warn(
+                f"driving_direction='{self.driving_direction}'는 올바르지 않음; clockwise 사용")
+            self.driving_direction = 'clockwise'
+        # BEV x축은 오른쪽이 양수다. 시계방향은 오른쪽, 반시계방향은 왼쪽으로 회피한다.
+        self.avoidance_offset_sign = (
+            1.0 if self.driving_direction == 'clockwise' else -1.0
+        )
         self.image_center_x = int(self.declare_parameter('image_center_x', IMAGE_CENTER_X).value)
         # BEV ROI에서 차량이 맞추려는 기준 x. 디버그 화면에도 수직선으로 표시한다.
         self.tracking_center_x = int(
@@ -89,24 +117,36 @@ class Yolov8InfoExtractor(Node):
         self.publisher = self.create_publisher(LaneInfo, self.pub_topic, 10)
         self.roi_image_publisher = self.create_publisher(Image, self.roi_image_topic, 10)
 
-        # 추종할 차선을 고정한다('lane_1' | 'lane_2'). 빈 문자열이면 기존 상태머신 사용.
-        # 실차에서는 한쪽 선만 보이는 구간이 대부분이라 상태머신이 흔들리고,
-        # 전환될 때마다 타겟이 lane_width_pixel만큼 튄다.
-        self.fixed_lane_class = str(
-            self.declare_parameter('fixed_lane_class', '').value).strip()
-        if self.fixed_lane_class not in ('', 'lane_1', 'lane_2'):
+        # 영상 속 라벨 위치로 현재 차선을 재판정하지 않는다. 시작 차선에서 출발해
+        # 장애물 회피가 실제로 완료됐을 때만 lane_1 <-> lane_2 상태를 바꾼다.
+        self.initial_lane_class = str(
+            self.declare_parameter('initial_lane_class', 'lane_2').value).strip()
+        if self.initial_lane_class not in ('lane_1', 'lane_2'):
             self.get_logger().warn(
-                f"fixed_lane_class='{self.fixed_lane_class}' 는 올바르지 않음. 자동 판단으로 진행")
-            self.fixed_lane_class = ''
-        if self.fixed_lane_class:
-            self.get_logger().info(f"차선 추종 고정: {self.fixed_lane_class}")
+                f"initial_lane_class='{self.initial_lane_class}' 는 올바르지 않음; lane_2 사용")
+            self.initial_lane_class = 'lane_2'
+        self.get_logger().info(f"초기 주행 차선: {self.initial_lane_class}")
+        self.get_logger().info(
+            f"주행 방향: {self.driving_direction} "
+            f"(회피 방향: {'오른쪽' if self.avoidance_offset_sign > 0 else '왼쪽'})")
 
-        self.current_lane_state = self.fixed_lane_class or 'lane_2'
+        self.current_lane_state = self.initial_lane_class
+        self.pending_lane_state = self.current_lane_state
         self.current_offset = 0.0
         self.target_offset = 0.0
         self.obstacle_detected = False
         self.obstacle_dist = 999.0
         self.obstacle_pixel_x = -1.0
+        # 차선 번호가 아니라 기준 차선(0) / 반대 차선(1)만 내부 상태로 관리한다.
+        # 새 장애물을 만날 때마다 토글하고, 장애물이 없으면 현재 차선을 계속 유지한다.
+        self.active_lane_index = 0
+        self.lane_change_in_progress = False
+        self.lane_change_direction_sign = 0.0
+        self.obstacle_armed = True
+        self.last_lane_change_sec = 0.0
+        self.tracked_obstacle_min_dist = float('inf')
+        self.obstacle_clear_since_sec = None
+        self.last_offset_update_sec = self.get_clock().now().nanoseconds / 1e9
         self.latest_path = []
 
         # 차선 상태 전환 디바운싱용
@@ -147,42 +187,8 @@ class Yolov8InfoExtractor(Node):
                 lane_2_box = d # 박스 정보 저장
                 has_lane_2 = True
 
-        # 내 차선 판단 (이번 프레임의 '임시' 상태)
-        detected_state = self.current_lane_state
-
-        # fixed_lane_class가 지정되면 상태 판단/전환을 아예 하지 않고 그 차선만 추종한다.
-        # 실측(주행 20초, 191프레임): lane_2 단독 91.1%, 둘 다 8.9%, lane_1 단독 0%.
-        # 이 상태에서 상태머신을 돌리면 lane_2_far_right_threshold 근처에서 판정이
-        # 흔들리고, 전환될 때마다 lane_width_pixel(280)만큼 타겟이 통째로 이동한다.
-        if self.fixed_lane_class:
-            detected_state = self.fixed_lane_class
-            self.current_lane_state = self.fixed_lane_class
-            self.lane_change_counter = 0
-            self.potential_next_state = None
-        elif has_lane_1 and has_lane_2:
-            dist_1 = abs(lane_1_cx - self.image_center_x)
-            dist_2 = abs(lane_2_cx - self.image_center_x)
-            detected_state = 'lane_1' if dist_1 < dist_2 else 'lane_2'
-        elif has_lane_2 and not has_lane_1:
-            detected_state = 'lane_1' if lane_2_cx > self.lane_2_far_right_threshold else 'lane_2'
-        elif has_lane_1 and not has_lane_2:
-            detected_state = 'lane_2' if lane_1_cx < self.lane_1_far_left_threshold else 'lane_1'
-
-        # 상태 변경 디바운싱: 같은 새 상태가 연속으로 lane_change_threshold_count번 잡혀야 전환
-        if detected_state != self.current_lane_state:
-            if detected_state == self.potential_next_state:
-                self.lane_change_counter += 1
-            else:
-                self.potential_next_state = detected_state
-                self.lane_change_counter = 1
-
-            if self.lane_change_counter >= self.lane_change_threshold_count:
-                self.get_logger().info(f"🔄 Lane State Changed: {self.current_lane_state} -> {detected_state}")
-                self.current_lane_state = detected_state
-                self.lane_change_counter = 0
-        else:
-            self.lane_change_counter = 0
-            self.potential_next_state = None
+        # 중요: lane_1/lane_2 검출이 순간적으로 뒤바뀌어도 current_lane_state는
+        # 여기서 변경하지 않는다. 상태 변경 권한은 아래 장애물 회피 상태머신에만 있다.
 
         # ---------------------------------------------------
         # 2. [방식 B] BBox Overlap Check (겹침 확인)
@@ -214,24 +220,59 @@ class Yolov8InfoExtractor(Node):
                 if self.obstacle_pixel_x < self.image_center_x: obstacle_in_lane_1 = True
                 else: obstacle_in_lane_2 = True
 
-        # 전략 수립
-        if self.obstacle_detected and self.obstacle_dist < self.avoidance_trigger_dist:
-            if self.current_lane_state == 'lane_2':
-                # 내가 2차선인데 2차선에 장애물이 '확실히' 있다 -> 피함
-                if obstacle_in_lane_2:
-                    self.target_offset = -self.lane_width_pixel
-                    self.get_logger().warn(f"🚧 Obs Inside Lane 2 Box -> Dodge LEFT")
-                else:
-                    # 1차선에만 있거나 어디에도 안 겹침 -> 직진
-                    self.target_offset = 0.0
+        # lane_1/lane_2 검출 라벨은 회피 상태로 사용하지 않는다. 새로운 장애물을 만날 때마다
+        # 현재 차선과 반대 차선을 토글하고, 장애물이 없을 때는 현재 차선을 계속 유지한다.
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        obstacle_close = (
+            self.obstacle_detected
+            and self.obstacle_dist < self.avoidance_trigger_dist
+        )
 
-            elif self.current_lane_state == 'lane_1':
-                # 내가 1차선인데 1차선에 장애물이 '확실히' 있다 -> 피함
-                if obstacle_in_lane_1:
-                    self.target_offset = self.lane_width_pixel
-                    self.get_logger().warn(f"🚧 Obs Inside Lane 1 Box -> Dodge RIGHT")
-                else:
-                    self.target_offset = 0.0
+        if self.obstacle_armed and obstacle_close:
+            self.active_lane_index = 1 - self.active_lane_index
+            self.pending_lane_state = (
+                'lane_1' if self.current_lane_state == 'lane_2' else 'lane_2'
+            )
+            # 오프셋은 차선 변경 중에만 사용한다. 새 차선에 들어간 뒤에는 0으로
+            # 되돌려 카메라에 보이는 새 차선의 중앙을 그대로 추종한다.
+            self.lane_change_direction_sign = (
+                self.avoidance_offset_sign
+                if self.active_lane_index == 1 else -self.avoidance_offset_sign
+            )
+            self.lane_change_in_progress = True
+            self.obstacle_armed = False
+            self.last_lane_change_sec = now_sec
+            self.obstacle_clear_since_sec = None
+            self.tracked_obstacle_min_dist = self.obstacle_dist
+            move_to_other = self.active_lane_index == 1
+            if move_to_other:
+                move_direction = '오른쪽' if self.avoidance_offset_sign > 0 else '왼쪽'
+            else:
+                move_direction = '왼쪽' if self.avoidance_offset_sign > 0 else '오른쪽'
+            self.get_logger().warn(
+                f"새 장애물 {self.obstacle_dist:.2f}m: {move_direction}으로 차선 전환 "
+                f"({self.current_lane_state} -> {self.pending_lane_state})")
+
+        distance_jump = False
+        if not self.obstacle_armed:
+            if self.obstacle_detected:
+                self.obstacle_clear_since_sec = None
+                distance_jump = (
+                    self.obstacle_dist
+                    >= self.tracked_obstacle_min_dist + self.new_obstacle_jump_dist
+                )
+                self.tracked_obstacle_min_dist = min(
+                    self.tracked_obstacle_min_dist, self.obstacle_dist)
+            elif self.obstacle_clear_since_sec is None:
+                self.obstacle_clear_since_sec = now_sec
+                distance_jump = False
+            else:
+                distance_jump = False
+
+        self.target_offset = (
+            self.lane_change_direction_sign * self.lane_width_pixel
+            if self.lane_change_in_progress else 0.0
+        )
 
         # 추종할 차선 마스크가 안 보이면 반대쪽 차선을 대신 추종하고 오프셋으로 보정
         final_tracking_class = tracking_class
@@ -246,8 +287,47 @@ class Yolov8InfoExtractor(Node):
 
         real_target_offset = self.target_offset + final_offset_modifier
 
-        if self.current_offset < real_target_offset: self.current_offset = min(self.current_offset + self.shift_speed, real_target_offset)
-        elif self.current_offset > real_target_offset: self.current_offset = max(self.current_offset - self.shift_speed, real_target_offset)
+        # 추론 FPS에 따라 차선 변경 시간이 달라지지 않도록 실제 경과시간 기준으로 이동한다.
+        # 콜백 간격이 duration보다 길면 이번 프레임에서 목표 오프셋을 즉시 확정한다.
+        elapsed_sec = max(0.0, now_sec - self.last_offset_update_sec)
+        self.last_offset_update_sec = now_sec
+        offset_step = self.lane_width_pixel * elapsed_sec / self.lane_change_duration_sec
+        if self.current_offset < real_target_offset:
+            self.current_offset = min(self.current_offset + offset_step, real_target_offset)
+        elif self.current_offset > real_target_offset:
+            self.current_offset = max(self.current_offset - offset_step, real_target_offset)
+
+        # 차선 변경 명령을 계속 유지하면 새 차선에 들어간 뒤에도 차량이 계속 옆으로
+        # 꺾인다. 정착 시간이 지나면 오프셋을 제거하고 새로 보이는 차선 중심을 추종한다.
+        change_elapsed = now_sec - self.last_lane_change_sec
+        change_target_reached = abs(self.current_offset - real_target_offset) <= 5.0
+        if (self.lane_change_in_progress
+                and change_target_reached
+                and change_elapsed >= self.lane_change_settle_sec):
+            self.lane_change_in_progress = False
+            self.lane_change_direction_sign = 0.0
+            self.target_offset = 0.0
+            self.current_offset = 0.0
+            previous_lane_state = self.current_lane_state
+            self.current_lane_state = self.pending_lane_state
+            self.get_logger().info(
+                f"차선 전환 완료: {previous_lane_state} -> {self.current_lane_state}, "
+                "새 차선 중심 추종 시작")
+
+        if not self.obstacle_armed:
+            rearm_done = change_elapsed >= self.avoidance_rearm_sec
+            clear_done = (
+                self.obstacle_clear_since_sec is not None
+                and now_sec - self.obstacle_clear_since_sec >= self.avoidance_clear_sec
+            )
+            if (rearm_done and not self.lane_change_in_progress
+                    and (clear_done or distance_jump)):
+                self.obstacle_armed = True
+                self.obstacle_clear_since_sec = None
+                self.tracked_obstacle_min_dist = float('inf')
+                self.get_logger().info(
+                    f"현재 차선 {self.active_lane_index} 유지, 다음 장애물 감지 준비 "
+                    f"({'거리 점프' if distance_jump else '검출 clear'})")
 
         # CPFL.draw_edges()는 detections[0].mask로 이미지 크기를 잡는다. 우리 쪽 yolov8_node는
         # cone/car_back(detect 모델, 마스크 없음)과 lane_seg를 합쳐서 발행하므로, 첫 검출이
@@ -311,6 +391,11 @@ class Yolov8InfoExtractor(Node):
 
             cv2.putText(debug_img, f"Tracking: {self.current_lane_state}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(debug_img,
+                        f"Lane: {self.active_lane_index} "
+                        f"({'CHANGE' if self.lane_change_in_progress else ('ARMED' if self.obstacle_armed else 'WAIT_CLEAR')})",
+                        (330, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 2)
             if valid_x:
                 mean_x = sum(valid_x) / len(valid_x)
                 error_x = mean_x - self.tracking_center_x
