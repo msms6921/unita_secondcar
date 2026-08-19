@@ -150,7 +150,7 @@ class PathPlannerNode(Node):
             return
 
         candidates, offsets = self.generate_candidate_paths(x_points, y_points)
-        best_index = self.select_best_candidate(candidates, offsets)
+        best_index = self.select_best_candidate(candidates, offsets, x_points)
         selected_x = candidates[best_index]
 
         if self.enable_lattice_debug:
@@ -166,7 +166,7 @@ class PathPlannerNode(Node):
         path_msg.y_points = list(y_new)
         self.publisher.publish(path_msg)
 
-        self.get_logger().info(f"Lattice path selected offset {np.mean(selected_x - x_points):.1f} px")
+        self.get_logger().info(f"Lattice path selected offset {offsets[best_index]:.1f} px")
 
         self.target_points.clear()
 
@@ -181,10 +181,13 @@ class PathPlannerNode(Node):
 
         return candidates, offsets
 
-    def select_best_candidate(self, candidates, offsets):
+    def select_best_candidate(self, candidates, offsets, center_path):
         scores = []
         for idx, candidate_x in enumerate(candidates):
-            lane_penalty = np.mean(np.abs(candidate_x - np.mean(candidate_x))) * self.lane_center_weight
+            # 검출된 차선 중심 경로(center_path)에서 벗어난 만큼 감점한다.
+            # 이전 식은 후보 자체의 평균에서 퍼진 정도를 계산해서, 곡선 경로를 중앙에서
+            # 밀어 더 직선으로 만드는 후보가 장애물이 없어도 선택되는 편향이 있었다.
+            lane_penalty = np.mean(np.abs(candidate_x - center_path)) * self.lane_center_weight
 
             obstacle_penalty = 0.0
             if self.obstacle_detected and self.obstacle_dist < self.obstacle_dist_threshold and self.obstacle_pixel_x >= 0:

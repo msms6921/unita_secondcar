@@ -80,10 +80,11 @@ class CalibrationNode(Node):
         self.declare_parameter('scan_topic', '/scan')
 
         # 내부 파라미터 (params.yaml의 image_fusion_node 값과 같아야 함)
-        self.declare_parameter('fx', 565.529459)
-        self.declare_parameter('fy', 566.767111)
-        self.declare_parameter('cx', 337.983746)
-        self.declare_parameter('cy', 290.095566)
+        self.declare_parameter('fx', 478.681350)
+        self.declare_parameter('fy', 480.893055)
+        self.declare_parameter('cx', 314.853795)
+        self.declare_parameter('cy', 259.235816)
+        self.declare_parameter('distortion', [0.019110, -0.134271, 0.007227, -0.003467, 0.0])
 
         # extrinsic 원본
         self.declare_parameter('use_urdf_extrinsic', True)
@@ -123,6 +124,7 @@ class CalibrationNode(Node):
         self.K = np.array([[float(gp('fx').value), 0.0, float(gp('cx').value)],
                            [0.0, float(gp('fy').value), float(gp('cy').value)],
                            [0.0, 0.0, 1.0]], dtype=np.float64)
+        self.distortion = np.asarray(gp('distortion').value, dtype=np.float64)
 
         self.use_urdf_extrinsic = bool(gp('use_urdf_extrinsic').value)
         self.lidar_frame_id = str(gp('lidar_frame_id').value)
@@ -278,7 +280,7 @@ class CalibrationNode(Node):
             return empty, empty, np.array([], dtype=np.float64)
 
         return project_scan(ranges[valid], angles[valid], self._current_extrinsic(),
-                            self.K, w, h, self.min_cam_z)
+                            self.K, w, h, self.min_cam_z, self.distortion)
 
     # ------------------------------------------------------------------ 그리기
 

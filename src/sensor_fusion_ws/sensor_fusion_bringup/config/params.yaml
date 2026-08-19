@@ -21,14 +21,14 @@ rplidar_node:
 
 image_publisher_node:
   ros__parameters:
-    cam_num: 0
+    cam_num: 2
     # C920 두 대가 꽂혀 있고 모델명이 같아서 by-id로는 구분이 안 된다
     # (두 번째 카메라는 by-id 링크가 아예 안 생김 - 이름 충돌).
     # 그래서 "꽂은 USB 포트" 기준인 by-path로 전방(YOLO용) 카메라를 고정한다.
     # 번호(cam_num)는 재부팅마다 바뀔 수 있으므로 이 값이 있으면 그쪽이 우선.
     # 목록 확인: ros2 run camera_perception_pkg list_cameras --probe
     # 만약 화면에 다른 카메라가 나오면 아래 2.2.4.3 을 2.2.3 으로 바꾸면 된다.
-    camera_device: /dev/v4l/by-path/platform-3610000.usb-usb-0:2.2.4.3:1.0-video-index0
+    camera_device: ''
     # 캘리브레이션(fx/fy/cx/cy)을 뽑은 해상도와 반드시 같아야 함
     frame_width: 640
     frame_height: 480
@@ -38,7 +38,7 @@ image_publisher_node:
     autofocus: false
     focus: -1              # 0~255 절대 초점값. -1이면 안 건드림.
                            # 콘이 잘 보이는 거리에 맞춰 잡을 것 (아래 README의 튜닝 절차 참고)
-    auto_exposure: false
+    auto_exposure: true
     exposure: -1           # -1이면 안 건드림. 실내에서 화면이 너무 어두우면 값을 올릴 것
     auto_white_balance: false
     white_balance: -1
@@ -46,8 +46,9 @@ image_publisher_node:
 
 yolov8_node:
   ros__parameters:
-    device: cuda:0
-    threshold: 0.5
+    # 현재 PC에서는 torch.cuda.is_available()가 False이므로 CPU 추론을 사용한다.
+    device: cpu
+    threshold: 0.4
     iou: 0.45
     # --- 오탐 억제 ---
     # 멀리 있는 배경에서 작은 박스로 튀는 오탐 제거용. 0이면 해당 필터 끔.
@@ -64,10 +65,11 @@ image_fusion_node:
   ros__parameters:
     # 카메라 내부파라미터(캘리브레이션 값). 4개 다 여기서 관리한다
     # (예전에는 fx/cx만 launch로 넘어가고 fy/cy는 소스 기본값이 조용히 쓰였음)
-    fx: 565.529459
-    fy: 566.767111
-    cx: 337.983746
-    cy: 290.095566
+    fx: 478.681350
+    fy: 480.893055
+    cx: 314.853795
+    cy: 259.235816
+    distortion: [0.019110, -0.134271, 0.007227, -0.003467, 0.0]
     # 라이다 정면 방향 보정(도). l_shape_node의 front_angle_deg에도 동일 적용.
     front_angle_deg: -180.0
     display_mode: boxes       # raw / lidar / boxes / bev (창에서 숫자키 1~4로 실행 중 전환 가능)
@@ -103,9 +105,10 @@ image_fusion_node:
     # Point32(x=가장 가까운 장애물 거리[m], y=이미지상 중심 x[px], z=감지 플래그)
     publish_obstacle_info: true
     obstacle_topic: /lidar_obstacle_info
-    # 차선 마스크는 박스가 화면을 가득 채워서 "코앞에 장애물" 오판을 만든다. 장애물/표시 대상에서 제외
+    # 차선 마스크는 박스가 화면을 가득 채우므로 장애물 판정에서는 제외한다.
+    # 표시 제외는 비워 두어 boxes 화면에서 lane_1/lane_2 인식 여부를 확인한다.
     obstacle_class_exclude: "lane_1,lane_2"
-    box_class_exclude: "lane_1,lane_2"
+    box_class_exclude: ""
 
 l_shape_node:
   ros__parameters:
@@ -158,6 +161,8 @@ lane_info_extractor_node:
     shift_speed: 20.0          # 프레임당 오프셋 변화량(px). 클수록 차선 변경이 급해짐
 
     image_center_x: 320
+    # BEV ROI에서 카메라 영상 중앙을 추종 기준으로 사용한다.
+    tracking_center_x: 320
     lane_1_far_left_threshold: 180.0
     lane_2_far_right_threshold: 460.0
     # 차선 상태(1/2차선) 전환 디바운싱. 이만큼 연속으로 잡혀야 전환한다.
@@ -186,7 +191,7 @@ lane_info_extractor_node:
     # 즉 이 값은 일부 구간이 아니라 사실상 모든 프레임에 적용된다.
     #
     # 300은 근거 없는 기본값이었다. 주행 실측(184프레임)에서 target_x 평균이 289.5로
-    # car_center_x(332)보다 42.5px 왼쪽에 고정돼, 조향의 85%가 한쪽으로 쏠렸다.
+    # 당시 car_center_x(332)보다 42.5px 왼쪽에 고정돼, 조향의 85%가 한쪽으로 쏠렸다.
     # 추정을 42px 오른쪽으로 옮기려면 폭을 84 줄이면 된다 -> 300-84 = 216.
     # BEV 스케일로 독립 계산한 값(약 212)과도 일치한다.
     lane_width_for_center: 216
@@ -197,8 +202,8 @@ path_planner_node:
     sub_obstacle_topic: /lidar_obstacle_info
     pub_topic: path_planning_result
     # 이미지상 차량 앞 범퍼 중심 픽셀. 경로의 시작점으로 쓰인다.
-    # motion_planner_node의 car_center_point와 같은 값이어야 한다 (실측 보정값 332).
-    car_center_point: [332, 179]
+    # motion_planner_node의 car_center_point와 같은 값이어야 한다. 현재는 영상 중심 320.
+    car_center_point: [320, 179]
 
     candidate_count: 7             # 생성할 후보 경로 개수
     max_lattice_offset: 120.0      # 중심선 기준 좌/우 최대 오프셋(px)
@@ -222,18 +227,13 @@ motion_planner_node:
     # 신호등/라이다 정지 로직. 우리 쪽엔 신호등 인식 노드가 없어서 꺼둠
     use_traffic_lidar_stop: false
 
-    # BEV ROI 좌표계에서의 차량 중심선. 영상 정중앙(320)이 아니다.
-    # BEV src_points가 x=320 대칭이라 영상 중심은 320으로 매핑되므로, 이 차이는
-    # 카메라가 차체 중심선보다 왼쪽에 달렸다는 뜻이다. 320을 쓰면 제어기가 '카메라'를
-    # 차선 중앙에 맞추고 차체는 그만큼 치우친 채 달린다.
+    # BEV ROI 좌표계에서의 추종 기준선. 현재는 카메라 영상 정중앙(320)을 사용한다.
     #
-    # 332는 앞바퀴에서 좌우 차선까지 거리를 자로 재서 맞춘 뒤 실측한 값
+    # 과거 332는 앞바퀴에서 좌우 차선까지 거리를 자로 재서 맞춘 뒤 실측한 값
     # (165프레임, 두 차선 모두 검출, y=5/35 행 332 / y=65 행 330).
-    # 눈대중으로 놓고 잰 값은 362, 312로 ±50px 흔들렸는데 332가 그 중간이다.
-    # 재현성은 1회 측정이라 미검증. 주행에서 한쪽으로 정상편차가 남으면 이 값을 옮기거나
-    # 제어에 적분 보정을 넣어야 한다.
-    car_center_point: [332, 179]
-    car_center_x: 332
+    # 눈대중으로 놓고 잰 값은 362, 312로 ±50px 흔들렸는데 332가 그 중간이었다.
+    car_center_point: [320, 179]
+    car_center_x: 320
     vehicle_heading_rad: -1.57079632679
 
     # Pure Pursuit
@@ -279,6 +279,8 @@ serial_sender_node:
     # 즉 양(+) 명령 = 좌회전이다. motion_planner는 양수를 우회전으로 쓰므로 뒤집어야 한다.
     # (이 값을 검증 없이 false로 두고 진행하는 바람에, 제어기가 보정할 때마다
     #  반대로 밀려서 차가 한쪽으로 계속 흘러갔다)
-    steer_invert: true             # 조향이 반대로 먹으면 true
+    # 실차 검증 결과: 파란 경로가 오른쪽이고 steering이 양수일 때 바퀴가 왼쪽으로
+    # 움직였으므로 추가 반전 없이 Arduino로 전달한다.
+    steer_invert: true             # 실차 조향 방향에 맞춰 ROS 조향 부호 반전
 
     launch_rviz: true

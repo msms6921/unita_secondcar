@@ -50,7 +50,7 @@ lifecycle 노드. bbox, segmentation mask, pose keypoint를 모두 지원(모델
   - `roi_topic`(기본 `bird_eye/roi`): 버드아이뷰 변환에 쓰는 사다리꼴 ROI를 원본 이미지 위에 표시
   - `comparison_topic`(기본 `bird_eye/comparison`): 위 둘을 나란히 붙인 비교용 이미지
 - 파라미터
-  - `model`: 세그멘테이션 가중치 경로. 비워두면 패키지에 포함된 `models/lane_seg.pt`를 사용
+  - `model`: 세그멘테이션 가중치 경로. 비워두면 패키지에 포함된 `models/lane.pt`를 사용
   - `device`: `cpu` 또는 `cuda:0`. `fusion_bringup.launch.py`에서는 `yolov8_node`와 동일한 `device`
     launch 인자를 공유 (기본 `cuda:0`)
   - `src_points`(정규화 좌표 4쌍) / `normalized_src_points`: 도로면으로 볼 사다리꼴 ROI 꼭짓점
@@ -68,5 +68,5 @@ lifecycle 노드. bbox, segmentation mask, pose keypoint를 모두 지원(모델
 |---|---|
 | `best_cone.pt` | 콘/드럼 검출 (YOLOv8 detect), `yolov8_node`가 로딩 |
 | `car_back.pt` | 차량 후면 검출 (YOLOv8 detect), `yolov8_node`가 로딩 |
-| `lane_seg.pt` | 차선 세그멘테이션 (YOLOv8-seg), `bird_eye_node`가 로딩 |
+| `lane.pt` | 차선 세그멘테이션 (YOLOv8-seg), `bird_eye_node`가 로딩 |
 | `best.pt` | 이전 단일 모델(레거시). 현재 launch 파일들은 쓰지 않음 |

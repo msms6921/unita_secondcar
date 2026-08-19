@@ -105,8 +105,31 @@ def apply_calibration(ext: np.ndarray, pitch_deg: float, yaw_deg: float,
     return corr @ ext
 
 
+def project_camera_points(points_cam: np.ndarray, k_mat: np.ndarray,
+                          distortion: np.ndarray | None = None):
+    """카메라 좌표 3xN 점을 Brown-Conrady 왜곡을 적용해 픽셀로 변환."""
+    x = points_cam[0] / points_cam[2]
+    y = points_cam[1] / points_cam[2]
+
+    coeffs = np.zeros(5, dtype=np.float64)
+    if distortion is not None:
+        supplied = np.asarray(distortion, dtype=np.float64).reshape(-1)
+        coeffs[:min(5, supplied.size)] = supplied[:5]
+    k1, k2, p1, p2, k3 = coeffs
+
+    r2 = x * x + y * y
+    radial = 1.0 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2
+    x_distorted = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x)
+    y_distorted = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
+
+    u = k_mat[0, 0] * x_distorted + k_mat[0, 2]
+    v = k_mat[1, 1] * y_distorted + k_mat[1, 2]
+    return u, v
+
+
 def project_scan(ranges: np.ndarray, angles: np.ndarray, extrinsic: np.ndarray,
-                 k_mat: np.ndarray, img_w: int, img_h: int, min_cam_z: float = 0.1):
+                 k_mat: np.ndarray, img_w: int, img_h: int, min_cam_z: float = 0.1,
+                 distortion: np.ndarray | None = None):
     """유효한 (range, angle) 배열을 이미지 픽셀로 투영.
 
     반환: (u, v, range) - 모두 이미지 안에 들어온 점만.
@@ -128,10 +151,10 @@ def project_scan(ranges: np.ndarray, angles: np.ndarray, extrinsic: np.ndarray,
     if pts_cam.shape[1] == 0:
         return empty
 
-    pix = k_mat @ pts_cam[:3, :]
+    u, v = project_camera_points(pts_cam[:3, :], k_mat, distortion)
     # astype은 0쪽으로 버림이라 좌우가 비대칭으로 밀린다. 반올림으로.
-    u_i = np.rint(pix[0, :] / pix[2, :]).astype(np.int32)
-    v_i = np.rint(pix[1, :] / pix[2, :]).astype(np.int32)
+    u_i = np.rint(u).astype(np.int32)
+    v_i = np.rint(v).astype(np.int32)
 
     inside = (u_i >= 0) & (u_i < img_w) & (v_i >= 0) & (v_i < img_h)
     return u_i[inside], v_i[inside], ranges_v[inside]

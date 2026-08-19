@@ -18,7 +18,7 @@ _FALLBACK = {
     'image_publisher_node': {'cam_num': 0},
     'yolov8_node': {'device': 'cuda:0'},
     'image_fusion_node': {
-        'fx': 565.529459, 'cx': 337.983746, 'front_angle_deg': -180.0,
+        'fx': 478.681350, 'cx': 314.853795, 'front_angle_deg': -180.0,
         'display_mode': 'boxes', 'distance_tolerance': 0.6, 'draw_all_points': True,
         'use_urdf_extrinsic': True, 'lidar_frame_id': 'laser',
         'camera_frame_id': 'camera_optical_frame_tilted',
@@ -78,19 +78,15 @@ def generate_launch_description():
     camera_frame_id = LaunchConfiguration(
         'camera_frame_id', default=p('image_fusion_node', 'camera_frame_id'))
 
-    # cone/drum 탐지 + 차량 후면 탐지 + 차선 세그멘테이션 모델을 함께 로딩
-    # (콤마로 구분, yolov8_node가 각각 추론 후 결과를 /detections 하나로 합쳐서 발행)
-    # lane_seg.pt(lane_1/lane_2 마스크)는 lane_info_extractor_node가 쓴다.
+    # CPU 차선주행 모드: lane.pt만 로딩한다. 세 모델을 순차 추론하면 실측 약 0.36 Hz로
+    # 주행 제어에 너무 느리므로 cone/car_back 모델은 GPU 환경에서 다시 활성화한다.
+    # lane.pt(lane_1/lane_2 마스크)는 lane_info_extractor_node가 쓴다.
     camera_models_dir = os.path.join(
         get_package_share_directory('camera_perception_pkg'), 'models'
     )
-    model_path = ','.join([
-        os.path.join(camera_models_dir, 'best_cone.pt'),
-        os.path.join(camera_models_dir, 'car_back.pt'),
-        os.path.join(camera_models_dir, 'lane_seg.pt'),
-    ])
+    model_path = os.path.join(camera_models_dir, 'lane_seg.pt')
 
-    # bird_eye_node는 lane_seg를 한 번 더 추론하는 '보기용' 노드라, 주행(drive.launch.py)
+    # bird_eye_node는 lane.pt를 한 번 더 추론하는 '보기용' 노드라, 주행(drive.launch.py)
     # 때는 꺼서 Jetson GPU를 아낀다.
     enable_bird_eye = LaunchConfiguration('enable_bird_eye', default='true')
     # bird_eye_node 자체 미리보기 창(원본+버드아이뷰 나란히). Fusion Visualizer의 4/5번 화면과

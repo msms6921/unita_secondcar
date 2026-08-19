@@ -9,6 +9,18 @@ void handleLine(String line) {
   line.trim();
   if (line.length() == 0) return;
 
+  // Steering calibration command: F,<raw_pwm -255..255>
+  // The watchdog stops the front motor if this stream stops for 300 ms.
+  if (line.startsWith("F,")) {
+    int pwm = constrain(line.substring(2).toInt(), -255, 255);
+    frontTestPwm = pwm;
+    frontTestActive = (pwm != 0);
+    driveCommandActive = false;
+    rear_pwm_cmd = 0;
+    lastDriveMs = millis();
+    return;
+  }
+
   // Comma-separated command: C,<steering -1.0..1.0>,<rear_pwm>
   if (line.startsWith("C,")) {
     int idx1 = line.indexOf(',');
@@ -22,6 +34,7 @@ void handleLine(String line) {
 
     rear_pwm_cmd = constrain(rearStr.toInt(), -255, 255);
     targetSteering = normalizedToSteeringPosition(steerStr.toFloat());
+    frontTestActive = false;
 
     lastDriveMs = millis();
     driveCommandActive = true;
@@ -41,6 +54,7 @@ void handleLine(String line) {
 
     rear_pwm_cmd = constrain(rearStr.toInt(), -255, 255);
     targetSteering = normalizedToSteeringPosition(steerStr.toFloat());
+    frontTestActive = false;
 
     lastDriveMs = millis();
     driveCommandActive = true;

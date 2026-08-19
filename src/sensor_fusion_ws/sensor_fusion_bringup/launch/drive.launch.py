@@ -9,10 +9,11 @@
     -> serial_sender_node -> 아두이노("C,<조향 -1.0~1.0>,<후륜 PWM>")
 
 모든 파라미터는 config/params.yaml에서 관리한다.
-full_bringup.launch.py의 인자(cam_num, serial_port, device, ...)는 여기에도 그대로 먹는다.
+라이다와 Arduino 포트는 각각 lidar_serial_port / arduino_serial_port로 분리한다.
 
 예)
   ros2 launch sensor_fusion_bringup drive.launch.py cam_num:=1
+  ros2 launch sensor_fusion_bringup drive.launch.py lidar_serial_port:=/dev/ttyUSB0 arduino_serial_port:=/dev/ttyACM0
   ros2 launch sensor_fusion_bringup drive.launch.py enable_serial:=false   # 바퀴 안 굴리고 확인만
 """
 
@@ -40,13 +41,16 @@ def generate_launch_description():
     # 아두이노로 실제 명령을 내보낼지 여부. false면 /topic_control_signal까지만 돌아서
     # (ros2 topic echo /topic_control_signal) 바퀴를 안 굴리고 조향/속도를 확인할 수 있다.
     enable_serial = LaunchConfiguration('enable_serial', default='true')
+    lidar_serial_port = LaunchConfiguration('lidar_serial_port')
+    arduino_serial_port = LaunchConfiguration('arduino_serial_port')
     # 판단 노드들을 센서/YOLO가 뜬 뒤에 올리기 위한 지연[s]
     decision_start_delay = LaunchConfiguration('decision_start_delay', default='5.0')
 
     # 버드아이뷰(bird_eye_node) - 퓨전과 같은 카메라(/image_raw)를 보고 차선을 그린다.
     # 결과는 Fusion Visualizer의 4(bev)/5(bev_roi) 화면으로 들어간다.
-    # GPU가 모자라면 enable_bird_eye:=false로 끄면 된다 (lane_seg 추론이 한 번 줄어듦).
-    enable_bird_eye = LaunchConfiguration('enable_bird_eye', default='true')
+    # 주행 경로는 yolov8_node의 마스크를 직접 사용한다. 이 노드는 보기용으로 같은 lane.pt를
+    # 한 번 더 추론하므로 CPU 주행에서는 기본으로 꺼서 추론 중복을 없앤다.
+    enable_bird_eye = LaunchConfiguration('enable_bird_eye', default='false')
     # 자체 미리보기 창('Lane bird-eye | original')은 Fusion Visualizer와 중복이라 기본 꺼둠
     bird_eye_preview = LaunchConfiguration('bird_eye_preview', default='false')
 
@@ -85,11 +89,17 @@ def generate_launch_description():
             name='serial_sender_node',
             output='screen',
             condition=IfCondition(enable_serial),
-            parameters=[config_file],
+            parameters=[config_file, {'port': arduino_serial_port}],
         ),
     ]
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'lidar_serial_port', default_value='/dev/ttyUSB0',
+            description='RPLIDAR 시리얼 포트'),
+        DeclareLaunchArgument(
+            'arduino_serial_port', default_value='/dev/ttyACM0',
+            description='Arduino 제어 시리얼 포트'),
         DeclareLaunchArgument(
             'enable_serial', default_value=enable_serial,
             description='아두이노로 실제 제어 명령을 보낼지 여부. false면 명령 토픽까지만 확인'),
@@ -107,6 +117,7 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(full_bringup_path),
             launch_arguments={
+                'serial_port': lidar_serial_port,
                 'enable_bird_eye': enable_bird_eye,
                 'bird_eye_preview': bird_eye_preview,
             }.items(),

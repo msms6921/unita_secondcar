@@ -36,7 +36,8 @@ constexpr int STEERING_DIRECTION = 1;
 // normalizedToSteeringPosition()의 constrain(target, Min, Max)에 걸려,
 // 정규화 조향값이 0.676 미만이면(직진 0.0 포함) 목표가 전부 429로 눌렸다.
 // 그 결과 차선을 중앙으로 잡아도 앞바퀴가 한쪽 끝에 물린 채 계속 오른쪽으로 갔다.
-// 아래 510은 앞바퀴를 자로 재서 직진에 맞춘 뒤 A0를 실측한 값(121샘플, 509~511).
+// 새 센서 실측 범위는 오른쪽 끝 433, 왼쪽 끝 627이다.
+// 코드의 Min/Max는 물리 방향명이 아니라 ADC 숫자의 최소/최대 순서여야 한다.
 //
 // Min/Max도 실측으로 재보정했다. 앞바퀴를 띄우고 PWM 60/80/120으로 끝까지 밀었을 때
 // 실제 도달한 기계적 한계는 434 / 622였다(예전 값 429/632는 도달 불가능한 값이라,
@@ -46,9 +47,11 @@ constexpr int STEERING_DIRECTION = 1;
 // 맞추려고 ±70으로 잘라뒀는데, 그러면 우측 조향 능력의 38%를 안 쓰게 되고
 // 차선을 못 따라가고 벗어난다. 실측 한계(434/622) 안쪽으로 여유만 두고 전부 쓴다.
 // 좌 70 / 우 106으로 비대칭이므로 같은 크기의 명령이어도 우회전이 더 급하다.
+// 기계적 끝을 계속 밀지 않도록 양 끝에서 약 7 counts 안쪽으로 제한한다.
+// Center 530은 두 끝의 중간값으로 잡은 초기값이며 직진 실측 후 보정한다.
 int steeringPotMin = 440;
-int steeringPotCenter = 510;
-int steeringPotMax = 616;
+int steeringPotCenter = 530;
+int steeringPotMax = 620;
 unsigned long lastSteeringReport = 0;
 
 // 워치독(구동 명령 끊기면 정지)
@@ -60,6 +63,8 @@ int rear_pwm_cmd = 0;  // drive motor: -255..255
 int targetSteering = steeringPotCenter; // converted normalized steering target
 int steeringPwmOutput = 0;
 bool driveCommandActive = false;
+bool frontTestActive = false;
+int frontTestPwm = 0;
 
 
 // ===== Ultrasonic (HC-SR04 x4) =====
@@ -108,9 +113,16 @@ void loop() {
   if (millis() - lastDriveMs > DRIVE_WD_MS) {
     rear_pwm_cmd = 0;
     driveCommandActive = false;
+    frontTestActive = false;
+    frontTestPwm = 0;
   }
 
-  // Front motor uses closed-loop position control; rear motor drives.
-  updateSteeringControl();
+  // F 명령은 보정 전 측정용 개루프 제어, C 명령은 일반 폐루프 제어다.
+  if (frontTestActive) {
+    steeringPwmOutput = frontTestPwm;
+    setMotor(FRONT_EN, FRONT_IN1, FRONT_IN2, steeringPwmOutput);
+  } else {
+    updateSteeringControl();
+  }
   setMotor(REAR_EN, REAR_IN1, REAR_IN2, rear_pwm_cmd);
 }

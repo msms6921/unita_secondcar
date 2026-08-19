@@ -173,7 +173,7 @@ ros2 launch lidar_camera_fusion_pkg fusion_bringup.launch.py
 | `v` | 분할보기 토글 — 켜면 주화면+보조화면을 가로로 나란히 표시 |
 
 - YOLO는 cone/drum 탐지 모델(`best_cone.pt`), 차량 후면 탐지 모델(`car_back.pt`),
-  차선 세그멘테이션 모델(`lane_seg.pt`, 클래스 `lane_1`/`lane_2`) 세 개를 동시에 돌려서
+  차선 세그멘테이션 모델(`lane.pt`, 클래스 `lane_1`/`lane_2`) 세 개를 동시에 돌려서
   결과를 하나로 합쳐 발행한다 (`camera_perception_pkg/models/`, `yolov8_node`의 `model` 파라미터에
   콤마로 구분해서 넘기면 여러 모델을 함께 로딩함).
 - 차선 마스크는 박스가 화면을 거의 다 덮기 때문에, Fusion Visualizer의 박스 표시와
@@ -527,13 +527,12 @@ python3 firmware/tools/steer_pwm_sweep.py
 |---|---|---|
 | `fixed_lane_class` | `lane_2` | 추종 차선 고정. 빈 값이면 상태머신이 자동 판단 |
 | `lane_width_for_center` | 216 | BEV에서 가정하는 차선 폭(px) |
-| `car_center_x` | 332 | BEV ROI에서의 **차량 중심선**. 영상 정중앙(320)이 아니다 |
+| `car_center_x` | 320 | BEV ROI에서의 추종 기준선. 현재는 카메라 영상 정중앙을 사용 |
 | `target_y_end` | 95 | 목표점을 뽑을 행 범위 상한 (5/35/65 세 행만 사용) |
 
-`car_center_x`가 320이 아닌 이유는 카메라가 차체 중심선에서 벗어나 달렸기 때문이다.
-320을 쓰면 제어기가 *카메라*를 차선 중앙에 맞추고 *차체*는 그만큼 치우친 채 달린다.
-값을 다시 잡으려면 앞바퀴에서 좌우 차선까지 거리를 **자로 재서** 맞춘 뒤 `target_x`를 측정한다
-(눈대중으로 놓으면 ±50px씩 흔들린다).
+현재 `car_center_x`는 카메라 영상 중심인 320이다. 카메라가 차체 중심축에서 벗어나 장착됐다면
+카메라는 차선 중앙을 따르더라도 차체는 치우칠 수 있다. 차체 중심을 기준으로 다시 잡으려면
+앞바퀴에서 좌우 차선까지 거리를 **자로 재서** 맞춘 뒤 `target_x`를 측정한다.
 
 `lane_width_for_center`는 주행 중 `target_x` 평균과 `car_center_x`의 차이로 역산한다.
 `중심 = 선위치 − 폭/2`이므로 **`폭 보정량 = 2 × 편차`**다. 조향이 한쪽으로 쏠려 있으면

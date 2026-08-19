@@ -19,7 +19,7 @@ from rclpy.qos import qos_profile_sensor_data
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point32
-from interfaces_pkg.msg import TargetPoint, LaneInfo, DetectionArray
+from interfaces_pkg.msg import TargetPoint, LaneInfo, DetectionArray, PathPlanningResult
 from .lib import camera_perception_func_lib as CPFL
 
 #---------------Constant Variables---------------
@@ -61,6 +61,9 @@ class Yolov8InfoExtractor(Node):
             self.declare_parameter('avoidance_trigger_dist', AVOIDANCE_TRIGGER_DIST).value)
         self.shift_speed = float(self.declare_parameter('shift_speed', SHIFT_SPEED).value)
         self.image_center_x = int(self.declare_parameter('image_center_x', IMAGE_CENTER_X).value)
+        # BEV ROI에서 차량이 맞추려는 기준 x. 디버그 화면에도 수직선으로 표시한다.
+        self.tracking_center_x = int(
+            self.declare_parameter('tracking_center_x', self.image_center_x).value)
         self.lane_1_far_left_threshold = float(
             self.declare_parameter('lane_1_far_left_threshold', float(LANE_1_FAR_LEFT_THRESHOLD)).value)
         self.lane_2_far_right_threshold = float(
@@ -81,6 +84,8 @@ class Yolov8InfoExtractor(Node):
         self.qos_profile = qos_profile_sensor_data
         self.subscriber = self.create_subscription(DetectionArray, self.sub_topic, self.yolov8_detections_callback, self.qos_profile)
         self.obstacle_sub = self.create_subscription(Point32, self.sub_obstacle_topic, self.obstacle_callback, self.qos_profile)
+        self.path_sub = self.create_subscription(
+            PathPlanningResult, 'path_planning_result', self.path_callback, self.qos_profile)
         self.publisher = self.create_publisher(LaneInfo, self.pub_topic, 10)
         self.roi_image_publisher = self.create_publisher(Image, self.roi_image_topic, 10)
 
@@ -102,6 +107,7 @@ class Yolov8InfoExtractor(Node):
         self.obstacle_detected = False
         self.obstacle_dist = 999.0
         self.obstacle_pixel_x = -1.0
+        self.latest_path = []
 
         # 차선 상태 전환 디바운싱용
         self.lane_change_counter = 0
@@ -118,6 +124,9 @@ class Yolov8InfoExtractor(Node):
             self.obstacle_detected = False
             self.obstacle_dist = 999.0
             self.obstacle_pixel_x = -1.0
+
+    def path_callback(self, msg: PathPlanningResult):
+        self.latest_path = list(zip(msg.x_points, msg.y_points))
 
     def yolov8_detections_callback(self, detection_msg: DetectionArray):
         if len(detection_msg.detections) == 0: return
@@ -259,15 +268,6 @@ class Yolov8InfoExtractor(Node):
             bird_image = cv2.convertScaleAbs(bird_image_raw)
             roi_image = CPFL.roi_rectangle_below(bird_image, cutting_idx=self.roi_cutting_idx)
 
-            if self.show_image:
-                debug_img = cv2.cvtColor(roi_image, cv2.COLOR_GRAY2BGR)
-                cv2.putText(debug_img, f"State: {self.current_lane_state}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                if self.obstacle_detected:
-                     obs_info = "L1" if obstacle_in_lane_1 else ("L2" if obstacle_in_lane_2 else "None")
-                     color = (0,0,255) if (self.current_lane_state=='lane_1' and obstacle_in_lane_1) or (self.current_lane_state=='lane_2' and obstacle_in_lane_2) else (200,200,200)
-                     cv2.putText(debug_img, f"Obs In: {obs_info}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                cv2.imshow('Lane Info (ROI)', debug_img)
-                cv2.waitKey(1)
         except Exception: return
 
         grad = CPFL.dominant_gradient(roi_image, theta_limit=70)
@@ -285,6 +285,51 @@ class Yolov8InfoExtractor(Node):
                 final_x = max(0, min(640, final_x))
             else: final_x = -1
             tp = TargetPoint(); tp.target_x = round(final_x); tp.target_y = round(target_point_y); target_points.append(tp)
+
+        if self.show_image:
+            debug_img = cv2.cvtColor(roi_image, cv2.COLOR_GRAY2BGR)
+            # 노란선: 카메라/차량의 추종 기준, 초록점: 모델 마스크로 계산한 차선 중심점.
+            cv2.line(debug_img, (self.tracking_center_x, 0),
+                     (self.tracking_center_x, debug_img.shape[0] - 1), (0, 255, 255), 2)
+            valid_x = []
+            for point in target_points:
+                if point.target_x < 0:
+                    continue
+                valid_x.append(point.target_x)
+                cv2.circle(debug_img, (point.target_x, point.target_y), 6, (0, 255, 0), -1)
+                cv2.line(debug_img, (self.tracking_center_x, point.target_y),
+                         (point.target_x, point.target_y), (255, 0, 255), 1)
+
+            # 파란선: path_planner가 실제 motion_planner로 보내는 최종 경로.
+            path_pixels = np.array([
+                [round(x), round(y)] for x, y in self.latest_path
+                if 0 <= x < debug_img.shape[1] and 0 <= y < debug_img.shape[0]
+            ], dtype=np.int32)
+            if len(path_pixels) >= 2:
+                cv2.polylines(debug_img, [path_pixels], False, (255, 0, 0), 2,
+                              cv2.LINE_AA)
+
+            cv2.putText(debug_img, f"Tracking: {self.current_lane_state}", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            if valid_x:
+                mean_x = sum(valid_x) / len(valid_x)
+                error_x = mean_x - self.tracking_center_x
+                cv2.putText(debug_img,
+                            f"center={self.tracking_center_x} target={mean_x:.1f} error={error_x:+.1f}px",
+                            (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+            else:
+                cv2.putText(debug_img, "NO VALID LANE CENTER", (10, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+            if self.obstacle_detected:
+                obs_info = "L1" if obstacle_in_lane_1 else ("L2" if obstacle_in_lane_2 else "None")
+                color = ((0, 0, 255) if
+                         (self.current_lane_state == 'lane_1' and obstacle_in_lane_1) or
+                         (self.current_lane_state == 'lane_2' and obstacle_in_lane_2)
+                         else (200, 200, 200))
+                cv2.putText(debug_img, f"Obs In: {obs_info}", (10, 75),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+            cv2.imshow('Lane Info (ROI)', debug_img)
+            cv2.waitKey(1)
 
         lane = LaneInfo(); lane.slope = grad; lane.target_points = target_points
         self.publisher.publish(lane)

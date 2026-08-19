@@ -166,13 +166,14 @@ class UnitaPurePursuitNode(Node):
         if not forward_points:
             forward_points = path
 
-        for p in forward_points:
-            dx = p[0] - car_x
-            dy = p[1] - car_y
-            if math.hypot(dx, dy) >= self.lookahead_distance:
-                return p
-
-        return forward_points[0] if forward_points else None
+        # path_planner는 y가 작은 먼 점부터 큰 가까운 점 순으로 경로를 발행한다.
+        # 예전처럼 첫 번째 distance>=lookahead 점을 고르면 항상 화면 최상단의 가장 먼
+        # 점이 선택돼 곡선 중간 형상에 늦게 반응한다. 설정 거리와 가장 가까운 점을 쓴다.
+        return min(
+            forward_points,
+            key=lambda p: abs(math.hypot(p[0] - car_x, p[1] - car_y)
+                              - self.lookahead_distance),
+        ) if forward_points else None
 
     def compute_pp_steer_cmd(self, path):
         if not path:

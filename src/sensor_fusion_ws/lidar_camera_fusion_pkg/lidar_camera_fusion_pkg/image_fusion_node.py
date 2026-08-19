@@ -23,6 +23,7 @@ from interfaces_pkg.msg import DetectionArray
 from lidar_camera_fusion_pkg.calibration_utils import (
     apply_calibration,
     build_fallback_extrinsic,
+    project_camera_points,
     quaternion_to_matrix,
 )
 
@@ -108,10 +109,11 @@ class FusionVisualizerNode(Node):
         # -------------------------
         # Intrinsic
         # -------------------------
-        self.declare_parameter('fx', 565.529459)
-        self.declare_parameter('fy', 566.767111)
-        self.declare_parameter('cx', 337.983746)
-        self.declare_parameter('cy', 290.095566)
+        self.declare_parameter('fx', 478.681350)
+        self.declare_parameter('fy', 480.893055)
+        self.declare_parameter('cx', 314.853795)
+        self.declare_parameter('cy', 259.235816)
+        self.declare_parameter('distortion', [0.019110, -0.134271, 0.007227, -0.003467, 0.0])
 
         # -------------------------
         # Extrinsic (LiDAR -> Camera)
@@ -203,6 +205,8 @@ class FusionVisualizerNode(Node):
         self.K = np.array([[fx, 0.0, cx],
                            [0.0, fy, cy],
                            [0.0, 0.0, 1.0]], dtype=np.float64)
+        self.distortion = np.asarray(
+            self.get_parameter('distortion').value, dtype=np.float64)
 
         self.use_urdf_extrinsic = bool(self.get_parameter('use_urdf_extrinsic').value)
         self.lidar_frame_id = str(self.get_parameter('lidar_frame_id').value)
@@ -504,7 +508,12 @@ class FusionVisualizerNode(Node):
 
         # 화면에 안 그리는 모드여도 장애물 정보를 발행해야 하면 투영은 해야 한다
         if scan_ok and ((needed_modes & {'lidar', 'boxes'}) or self.publish_obstacle_info):
-            u_pix, v_pix, ranges = self.project_scan_to_image(self.last_scan, w, h)
+            try:
+                u_pix, v_pix, ranges = self.project_scan_to_image(self.last_scan, w, h)
+            except Exception as exc:
+                self.get_logger().error(
+                    f'라이다-카메라 투영 실패: {type(exc).__name__}: {exc}',
+                    throttle_duration_sec=2.0)
 
         if self.publish_obstacle_info:
             self._publish_obstacle_info(det_ok, scan_ok, u_pix, v_pix, ranges, w, h)
@@ -800,9 +809,8 @@ class FusionVisualizerNode(Node):
         if pts_cam.shape[1] == 0:
             return np.array([], dtype=np.int32), np.array([], dtype=np.int32), np.array([], dtype=np.float64)
 
-        pix = self.K @ pts_cam[:3, :]
-        u = pix[0, :] / pix[2, :]
-        v = pix[1, :] / pix[2, :]
+        u, v = project_camera_points(
+            pts_cam[:3, :], self.K, self.distortion)
 
         # astype은 0쪽으로 버림이라 좌우가 비대칭으로 밀린다. 반올림으로 교체.
         u_i = np.rint(u).astype(np.int32)

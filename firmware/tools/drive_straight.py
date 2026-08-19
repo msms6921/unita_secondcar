@@ -28,7 +28,7 @@ def send(n, rear, dur):
 try:
     print("조향 중립 정렬 중...")
     p = send(0.0, 0, 3.0)
-    print(f"  정렬 완료: pot={p} (목표 510)\n")
+    print(f"  정렬 완료: pot={p} (현재 펌웨어의 steeringPotCenter와 비교)\n")
     print(f"직진 {sec}초 (rear PWM {pwm}, 조향 고정 0)")
     p = send(0.0, pwm, sec)
     print(f"  주행 중 pot={p}")

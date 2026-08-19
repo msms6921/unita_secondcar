@@ -34,7 +34,7 @@ def generate_launch_description():
     _FALLBACK = {
         'serial_port': '/dev/ttyUSB0', 'serial_baudrate': 460800, 'frame_id': 'laser',
         'device': 'cuda:0', 'cam_num': 0,
-        'fx': 565.529459, 'cx': 337.983746, 'front_angle_deg': -180.0,
+        'fx': 478.681350, 'cx': 314.853795, 'front_angle_deg': -180.0,
         'display_mode': 'boxes', 'distance_tolerance': 0.6, 'draw_all_points': True,
         'use_urdf_extrinsic': True, 'lidar_frame_id': 'laser',
         'camera_frame_id': 'camera_optical_frame_tilted', 'cam_pitch_deg': 14.0,
