@@ -97,6 +97,10 @@ class FusionVisualizerNode(Node):
         # 포맷으로 /lidar_obstacle_info를 발행한다 (minicar_sim의 box_lidar_match_node와 동일 포맷).
         self.declare_parameter('publish_obstacle_info', False)
         self.declare_parameter('obstacle_topic', '/lidar_obstacle_info')
+        # 콘이 여러 개 보이면 라이다 거리 최솟값으로 bbox를 고르지 않는다. 잘못 투영된
+        # 한 점이 먼 콘에 들어가면 장애물의 좌우 위치가 뒤집히기 때문이다.
+        self.declare_parameter('obstacle_selection_mode', 'visual_front')
+        self.declare_parameter('obstacle_publish_max_dist', 3.0)
         # 장애물로 치지 않을 클래스. 차선 세그멘테이션(lane_1/lane_2)은 박스가 화면을 가득 채워서
         # 그대로 두면 "코앞에 장애물이 있다"고 잘못 나간다.
         self.declare_parameter('obstacle_class_exclude', 'lane_1,lane_2')
@@ -188,6 +192,15 @@ class FusionVisualizerNode(Node):
 
         self.publish_obstacle_info = bool(self.get_parameter('publish_obstacle_info').value)
         self.obstacle_topic = str(self.get_parameter('obstacle_topic').value)
+        self.obstacle_selection_mode = str(
+            self.get_parameter('obstacle_selection_mode').value).strip().lower()
+        if self.obstacle_selection_mode not in ('visual_front', 'nearest_range'):
+            self.get_logger().warn(
+                f"알 수 없는 obstacle_selection_mode='{self.obstacle_selection_mode}'; "
+                "visual_front 사용")
+            self.obstacle_selection_mode = 'visual_front'
+        self.obstacle_publish_max_dist = float(
+            self.get_parameter('obstacle_publish_max_dist').value)
         self.obstacle_class_exclude = {
             c.strip() for c in str(self.get_parameter('obstacle_class_exclude').value).split(',') if c.strip()
         }
@@ -571,20 +584,34 @@ class FusionVisualizerNode(Node):
             self.pub_img.publish(out_msg)
 
     def _publish_obstacle_info(self, det_ok, scan_ok, u_pix, v_pix, ranges, w, h):
-        """가장 가까운 장애물을 Point32(x=거리[m], y=이미지상 중심 x[px], z=감지 플래그)로 발행.
+        """주행에 사용할 한 장애물을 Point32(x=거리, y=bbox 중심 x, z=플래그)로 발행.
 
-        박스별 거리는 화면 표시와 똑같이 estimate_distance_in_bbox()로 구하므로,
-        'boxes' 화면에 찍히는 거리와 판단 노드가 받는 거리가 항상 같다.
-        obstacle_class_exclude에 든 클래스(기본: 차선)는 장애물로 치지 않는다.
+        visual_front 모드에서는 영상에서 아래쪽에 있고 큰 bbox를 먼저 고른 뒤 그 bbox의
+        거리만 계산한다. 라이다 점을 먼저 모든 bbox에 끼워 맞춘 뒤 최솟값을 고르면,
+        먼 콘 bbox가 가까운 콘의 점을 가져가 장애물 x가 반대로 튈 수 있기 때문이다.
         """
-        closest_dist = None
-        closest_cx = -1.0
+        selected_dist = None
+        selected_cx = -1.0
 
         if det_ok and scan_ok and len(ranges) > 0:
-            for det in self.last_det.detections:
-                if str(getattr(det, 'class_name', '')) in self.obstacle_class_exclude:
-                    continue
+            candidates = [
+                det for det in self.last_det.detections
+                if str(getattr(det, 'class_name', '')) not in self.obstacle_class_exclude
+            ]
 
+            if self.obstacle_selection_mode == 'visual_front' and candidates:
+                # 동일 크기의 지면 장애물은 가까울수록 bbox 아래변이 낮고 높이/면적이 크다.
+                # 아래변을 우선하여 앞 콘 하나만 선택한다.
+                candidates = [max(
+                    candidates,
+                    key=lambda det: (
+                        float(det.bbox.center.position.y) + float(det.bbox.size.y) / 2.0,
+                        float(det.bbox.size.y),
+                        float(det.bbox.size.x) * float(det.bbox.size.y),
+                    ),
+                )]
+
+            for det in candidates:
                 bbox = det.bbox
                 box_cx = float(bbox.center.position.x)
                 box_cy = float(bbox.center.position.y)
@@ -605,14 +632,19 @@ class FusionVisualizerNode(Node):
                 if dist_m is None:
                     continue
 
-                if closest_dist is None or dist_m < closest_dist:
-                    closest_dist = dist_m
-                    closest_cx = (x1c + x2c) / 2.0
+                if selected_dist is None or dist_m < selected_dist:
+                    selected_dist = dist_m
+                    selected_cx = (x1c + x2c) / 2.0
 
         obs_msg = Point32()
-        if closest_dist is not None:
-            obs_msg.x = float(closest_dist)
-            obs_msg.y = float(closest_cx)
+        within_effect_range = (
+            selected_dist is not None
+            and (self.obstacle_publish_max_dist <= 0.0
+                 or selected_dist <= self.obstacle_publish_max_dist)
+        )
+        if within_effect_range:
+            obs_msg.x = float(selected_dist)
+            obs_msg.y = float(selected_cx)
             obs_msg.z = 1.0
         else:
             obs_msg.x = -1.0

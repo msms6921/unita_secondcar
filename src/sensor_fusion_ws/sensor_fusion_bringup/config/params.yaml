@@ -84,8 +84,8 @@ image_fusion_node:
     # 화면상 1도 ≈ 10 px라서 그게 곧 "점이 살짝 틀어져 보임"으로 나타난다.
     # 실행 중 Fusion Visualizer 창에서 i/k(pitch), j/l(yaw), u/o(roll), n/m(height)로
     # 맞춘 뒤 p키를 누르면 아래에 붙여넣을 값이 로그로 출력된다.
-    calib_pitch_deg: 12.25      # + 면 점이 화면 위로
-    calib_yaw_deg: 0.25        # + 면 점이 화면 오른쪽으로
+    calib_pitch_deg: 0.50      # + 면 점이 화면 위로
+    calib_yaw_deg: -0.25        # + 면 점이 화면 오른쪽으로
     calib_roll_deg: 0.0
     calib_height_m: 0.0       # + 면 카메라가 실제로 더 높이 달려있다는 뜻
     calib_step_deg: 0.25
@@ -105,6 +105,11 @@ image_fusion_node:
     # Point32(x=가장 가까운 장애물 거리[m], y=이미지상 중심 x[px], z=감지 플래그)
     publish_obstacle_info: true
     obstacle_topic: /lidar_obstacle_info
+    # 콘이 여러 개면 영상에서 가장 아래쪽/큰 앞 콘을 먼저 고른 뒤 그 콘의 거리만 사용한다.
+    # 잘못 투영된 라이다 점 때문에 먼 콘 bbox가 가까운 콘의 거리를 가져가는 것을 막는다.
+    obstacle_selection_mode: visual_front
+    # 선택된 앞 콘도 이 거리 밖에서는 판단 토픽에 내보내지 않는다.
+    obstacle_publish_max_dist: 3.0
     # 차선 마스크는 박스가 화면을 가득 채우므로 장애물 판정에서는 제외한다.
     # 표시 제외는 비워 두어 boxes 화면에서 lane_1/lane_2 인식 여부를 확인한다.
     obstacle_class_exclude: "lane_1,lane_2"
@@ -159,17 +164,19 @@ lane_info_extractor_node:
     # counterclockwise: 왼쪽으로 회피 후 오른쪽 복귀
     driving_direction: 'clockwise'
     # 현재 차선의 새 장애물이 이 거리 안에 들어오면 반대 차선으로 전환한다.
-    avoidance_trigger_dist: 5.0
+    avoidance_trigger_dist: 3.0
     # 방금 본 장애물을 새 장애물로 다시 세지 않기 위한 최소 재무장 시간.
     avoidance_rearm_sec: 2.0
     # 장애물이 연속으로 이 시간만큼 clear여야 다음 장애물을 받을 준비를 한다.
     avoidance_clear_sec: 0.5
     # 콘이 계속 보이더라도 라이다 거리가 이만큼 증가하면 다음 콘으로 바뀐 것으로 판단한다.
     new_obstacle_jump_dist: 0.4
+    # 거리 점프가 없어도 콘 중심 x가 이만큼 바뀌면 다른 차선의 다음 콘으로 판단한다.
+    new_obstacle_pixel_jump_px: 80.0
     # YOLO 프레임 수와 무관하게 이 시간 안에 회피 차선 목표 오프셋을 만든다.
-    lane_change_duration_sec: 2.0
-    # 이 시간이 지나면 차선 변경 오프셋을 0으로 되돌리고 새 차선 중심을 추종한다.
-    lane_change_settle_sec: 2.0
+    lane_change_duration_sec: 0.8
+    # 목표 오프셋에 도달한 뒤에도 이 시간 동안 유지해 실제 차선 변경을 끝낸다.
+    lane_change_hold_sec: 0.7
 
     image_center_x: 320
     # BEV ROI에서 카메라 영상 중앙을 추종 기준으로 사용한다.
@@ -205,7 +212,9 @@ lane_info_extractor_node:
     # 당시 car_center_x(332)보다 42.5px 왼쪽에 고정돼, 조향의 85%가 한쪽으로 쏠렸다.
     # 추정을 42px 오른쪽으로 옮기려면 폭을 84 줄이면 된다 -> 300-84 = 216.
     # BEV 스케일로 독립 계산한 값(약 212)과도 일치한다.
-    lane_width_for_center: 176
+    lane_width_for_center: 196
+    # 최종 주행 경로 평행 이동(+오른쪽 / -왼쪽). 현재 카메라/BEV 기준 약 30px = 10cm.
+    lane_center_bias_px: 60.0
 
 path_planner_node:
   ros__parameters:
