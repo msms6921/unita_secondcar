@@ -84,8 +84,8 @@ image_fusion_node:
     # 화면상 1도 ≈ 10 px라서 그게 곧 "점이 살짝 틀어져 보임"으로 나타난다.
     # 실행 중 Fusion Visualizer 창에서 i/k(pitch), j/l(yaw), u/o(roll), n/m(height)로
     # 맞춘 뒤 p키를 누르면 아래에 붙여넣을 값이 로그로 출력된다.
-    calib_pitch_deg: 0.50      # + 면 점이 화면 위로
-    calib_yaw_deg: -0.25        # + 면 점이 화면 오른쪽으로
+    calib_pitch_deg: 1.25      # + 면 점이 화면 위로
+    calib_yaw_deg: 0.25        # + 면 점이 화면 오른쪽으로
     calib_roll_deg: 0.0
     calib_height_m: 0.0       # + 면 카메라가 실제로 더 높이 달려있다는 뜻
     calib_step_deg: 0.25
@@ -110,6 +110,8 @@ image_fusion_node:
     obstacle_selection_mode: visual_front
     # 선택된 앞 콘도 이 거리 밖에서는 판단 토픽에 내보내지 않는다.
     obstacle_publish_max_dist: 3.0
+    # 거리 계산, 흰 대표점 표시, 장애물 발행은 cone 검출에만 적용한다.
+    obstacle_class_include: "cone"
     # 차선 마스크는 박스가 화면을 가득 채우므로 장애물 판정에서는 제외한다.
     # 표시 제외는 비워 두어 boxes 화면에서 lane_1/lane_2 인식 여부를 확인한다.
     obstacle_class_exclude: "lane_1,lane_2"
@@ -164,9 +166,11 @@ lane_info_extractor_node:
     # counterclockwise: 왼쪽으로 회피 후 오른쪽 복귀
     driving_direction: 'clockwise'
     # 현재 차선의 새 장애물이 이 거리 안에 들어오면 반대 차선으로 전환한다.
-    avoidance_trigger_dist: 3.0
+    avoidance_trigger_dist: 2.0
+    # 첫 회피가 끝난 뒤 두 번째 이후 장애물은 더 일찍 회피를 시작한다.
+    avoidance_next_trigger_dist: 3.0
     # 방금 본 장애물을 새 장애물로 다시 세지 않기 위한 최소 재무장 시간.
-    avoidance_rearm_sec: 2.0
+    avoidance_rearm_sec: 5.0
     # 장애물이 연속으로 이 시간만큼 clear여야 다음 장애물을 받을 준비를 한다.
     avoidance_clear_sec: 0.5
     # 콘이 계속 보이더라도 라이다 거리가 이만큼 증가하면 다음 콘으로 바뀐 것으로 판단한다.
@@ -176,7 +180,7 @@ lane_info_extractor_node:
     # YOLO 프레임 수와 무관하게 이 시간 안에 회피 차선 목표 오프셋을 만든다.
     lane_change_duration_sec: 0.8
     # 목표 오프셋에 도달한 뒤에도 이 시간 동안 유지해 실제 차선 변경을 끝낸다.
-    lane_change_hold_sec: 0.7
+    lane_change_hold_sec: 2.0
 
     image_center_x: 320
     # BEV ROI에서 카메라 영상 중앙을 추종 기준으로 사용한다.
@@ -186,6 +190,8 @@ lane_info_extractor_node:
     # 차선 상태(1/2차선) 전환 디바운싱. 이만큼 연속으로 잡혀야 전환한다.
     # 1이면 minicar_sim 원본과 동일(즉시 전환). 실차는 마스크가 튀어서 15 정도가 안정적
     lane_change_threshold_count: 15
+    # 이 confidence 이상인 lane_2를 확정하고, 남은 차선 검출은 lane_1 역할로 사용한다.
+    lane_2_confidence_threshold: 0.80
 
     # BEV 변환 원본 좌표 4점 (좌상x,좌상y, 우상x,우상y, 우하x,우하y, 좌하x,좌하y) - 640x480 기준.
     # 카메라 장착 각도가 sim과 다르면 여기부터 다시 잡아야 한다 (bev_tuning 참고)
@@ -283,9 +289,9 @@ motion_planner_node:
     # 너무 느리거나 stall(삐 소리만 나고 안 굴러감)이면 5씩 올릴 것.
     # 조향 튜닝이 끝나고 정상 주행으로 돌아갈 때는 min/max를 다시 벌릴 것. 예)
     #   base_speed: 40 / min_speed: 30 / max_speed: 55
-    base_speed: 30
-    min_speed: 30
-    max_speed: 30
+    base_speed: 50
+    min_speed: 50
+    max_speed: 50
     steer_speed_gain: 12.0         # 조향이 클수록 감속시키는 계수
 
 serial_sender_node:

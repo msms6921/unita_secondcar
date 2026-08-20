@@ -30,6 +30,7 @@ ROI_IMAGE_TOPIC_NAME = "/roi_image"
 SHOW_IMAGE = True
 LANE_WIDTH_PIXEL = 200      # 차선 변경 시 옆 차선까지의 BEV 픽셀 거리 (실차ws에서는 280을 씀)
 AVOIDANCE_TRIGGER_DIST = 2.4  # 이 거리[m]보다 가까운 장애물만 회피 대상 (실차ws에서는 1.8)
+AVOIDANCE_NEXT_TRIGGER_DIST = 3.0  # 두 번째 이후 장애물 회피 시작 거리
 AVOIDANCE_REARM_SEC = 2.0    # 첫 장애물을 두 번째 장애물로 재인식하지 않을 최소 시간
 AVOIDANCE_CLEAR_SEC = 0.5    # 원래 차선이 연속으로 비어 있어야 하는 시간
 NEW_OBSTACLE_JUMP_DIST = 0.4  # 다음 콘으로 대상이 바뀌었다고 볼 거리 증가량[m]
@@ -52,6 +53,7 @@ TARGET_Y_END = 155
 TARGET_Y_STEP = 30
 LANE_WIDTH_FOR_CENTER = 300  # get_lane_center가 한쪽 선만 보일 때 가정하는 차선 폭(px)
 LANE_CENTER_BIAS_PX = 0.0  # 최종 추종 경로의 좌우 평행 이동(+오른쪽 / -왼쪽)
+LANE_2_CONFIDENCE_THRESHOLD = 0.80  # 이 이상인 lane_2를 현재 주행 기준선으로 확정
 #----------------------------------------------
 
 class Yolov8InfoExtractor(Node):
@@ -66,6 +68,9 @@ class Yolov8InfoExtractor(Node):
         self.lane_width_pixel = float(self.declare_parameter('lane_width_pixel', float(LANE_WIDTH_PIXEL)).value)
         self.avoidance_trigger_dist = float(
             self.declare_parameter('avoidance_trigger_dist', AVOIDANCE_TRIGGER_DIST).value)
+        self.avoidance_next_trigger_dist = float(
+            self.declare_parameter(
+                'avoidance_next_trigger_dist', AVOIDANCE_NEXT_TRIGGER_DIST).value)
         self.avoidance_rearm_sec = float(
             self.declare_parameter('avoidance_rearm_sec', AVOIDANCE_REARM_SEC).value)
         self.avoidance_clear_sec = float(
@@ -114,6 +119,9 @@ class Yolov8InfoExtractor(Node):
             self.declare_parameter('lane_width_for_center', LANE_WIDTH_FOR_CENTER).value)
         self.lane_center_bias_px = float(
             self.declare_parameter('lane_center_bias_px', LANE_CENTER_BIAS_PX).value)
+        self.lane_2_confidence_threshold = float(
+            self.declare_parameter(
+                'lane_2_confidence_threshold', LANE_2_CONFIDENCE_THRESHOLD).value)
 
         self.cv_bridge = CvBridge()
         self.qos_profile = qos_profile_sensor_data
@@ -157,6 +165,7 @@ class Yolov8InfoExtractor(Node):
         self.obstacle_clear_since_sec = None
         self.last_offset_update_sec = self.get_clock().now().nanoseconds / 1e9
         self.latest_path = []
+        self.avoidance_count = 0
 
         # 차선 상태 전환 디바운싱용
         self.lane_change_counter = 0
@@ -186,15 +195,43 @@ class Yolov8InfoExtractor(Node):
         lane_1_cx, lane_2_cx = -1, -1
         has_lane_1, has_lane_2 = False, False
 
-        for d in detection_msg.detections:
-            if d.class_name == 'lane_1':
-                lane_1_cx = d.bbox.center.position.x
-                lane_1_box = d # 박스 정보 저장
+        lane_detections = [
+            d for d in detection_msg.detections
+            if d.class_name in ('lane_1', 'lane_2') and d.mask.height > 0
+        ]
+
+        # lane_2는 confidence 0.80 이상인 검출 중 최고값으로 확정한다.
+        # 나머지 물리적으로 다른 차선 검출은 모델 라벨과 관계없이 lane_1 역할로 쓴다.
+        confident_lane_2 = [
+            d for d in lane_detections
+            if d.class_name == 'lane_2'
+            and d.score >= self.lane_2_confidence_threshold
+        ]
+        if confident_lane_2:
+            lane_2_box = max(confident_lane_2, key=lambda d: d.score)
+            lane_2_cx = lane_2_box.bbox.center.position.x
+            has_lane_2 = True
+
+            remaining_lanes = [d for d in lane_detections if d is not lane_2_box]
+            if remaining_lanes:
+                lane_1_box = max(remaining_lanes, key=lambda d: d.score)
+                lane_1_cx = lane_1_box.bbox.center.position.x
                 has_lane_1 = True
+
+        # 확실한 lane_2가 없는 프레임은 기존 모델 라벨을 그대로 사용한다.
+        for d in lane_detections:
+            if confident_lane_2:
+                break
+            if d.class_name == 'lane_1':
+                if lane_1_box is None or d.score > lane_1_box.score:
+                    lane_1_cx = d.bbox.center.position.x
+                    lane_1_box = d # 같은 class 중 최고 confidence 검출만 저장
+                    has_lane_1 = True
             elif d.class_name == 'lane_2':
-                lane_2_cx = d.bbox.center.position.x
-                lane_2_box = d # 박스 정보 저장
-                has_lane_2 = True
+                if lane_2_box is None or d.score > lane_2_box.score:
+                    lane_2_cx = d.bbox.center.position.x
+                    lane_2_box = d # 같은 class 중 최고 confidence 검출만 저장
+                    has_lane_2 = True
 
         # 중요: lane_1/lane_2 검출이 순간적으로 뒤바뀌어도 current_lane_state는
         # 여기서 변경하지 않는다. 상태 변경 권한은 아래 장애물 회피 상태머신에만 있다.
@@ -232,9 +269,14 @@ class Yolov8InfoExtractor(Node):
         # lane_1/lane_2 검출 라벨은 회피 상태로 사용하지 않는다. 새로운 장애물을 만날 때마다
         # 현재 차선과 반대 차선을 토글하고, 장애물이 없을 때는 현재 차선을 계속 유지한다.
         now_sec = self.get_clock().now().nanoseconds / 1e9
+        trigger_dist = (
+            self.avoidance_trigger_dist
+            if self.avoidance_count == 0
+            else self.avoidance_next_trigger_dist
+        )
         obstacle_close = (
             self.obstacle_detected
-            and self.obstacle_dist < self.avoidance_trigger_dist
+            and self.obstacle_dist < trigger_dist
         )
 
         if self.obstacle_armed and obstacle_close:
@@ -251,6 +293,7 @@ class Yolov8InfoExtractor(Node):
             self.lane_change_in_progress = True
             self.lane_change_target_reached_sec = None
             self.obstacle_armed = False
+            self.avoidance_count += 1
             self.last_lane_change_sec = now_sec
             self.obstacle_clear_since_sec = None
             self.tracked_obstacle_min_dist = self.obstacle_dist
@@ -370,15 +413,20 @@ class Yolov8InfoExtractor(Node):
         # CPFL.draw_edges()는 detections[0].mask로 이미지 크기를 잡는다. 우리 쪽 yolov8_node는
         # cone/car_back(detect 모델, 마스크 없음)과 lane_seg를 합쳐서 발행하므로, 첫 검출이
         # 콘이면 크기가 0인 이미지가 만들어진다. 마스크가 있는 차선 검출만 따로 넘긴다.
-        lane_msg = DetectionArray()
-        lane_msg.header = detection_msg.header
-        lane_msg.detections = [d for d in detection_msg.detections
-                               if d.class_name in ('lane_1', 'lane_2') and d.mask.height > 0]
-        if not lane_msg.detections:
+        selected_lane = lane_1_box if final_tracking_class == 'lane_1' else lane_2_box
+        if selected_lane is None or selected_lane.mask.height <= 0:
             return
 
+        # 같은 class의 여러 mask를 합치면 두 lane 사이를 중앙으로 오인한다.
+        # bbox와 경로 모두 위에서 고른 최고 confidence instance 하나만 사용한다.
+        lane_msg = DetectionArray()
+        lane_msg.header = detection_msg.header
+        lane_msg.detections = [selected_lane]
+
         try:
-            edge_image = CPFL.draw_edges(lane_msg, cls_name=final_tracking_class, color=255)
+            # lane_1 역할로 재할당된 검출은 원래 YOLO 라벨이 lane_2일 수 있다.
+            edge_image = CPFL.draw_edges(
+                lane_msg, cls_name=selected_lane.class_name, color=255)
             (h, w) = (edge_image.shape[0], edge_image.shape[1])
             dst_mat = [[round(w * 0.2), round(h * 0.0)], [round(w * 0.8), round(h * 0.0)], [round(w * 0.8), h], [round(w * 0.2), h]]
 

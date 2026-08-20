@@ -101,6 +101,8 @@ class FusionVisualizerNode(Node):
         # 한 점이 먼 콘에 들어가면 장애물의 좌우 위치가 뒤집히기 때문이다.
         self.declare_parameter('obstacle_selection_mode', 'visual_front')
         self.declare_parameter('obstacle_publish_max_dist', 3.0)
+        # 거리 계산과 장애물 발행을 적용할 클래스. 현재 주행 장애물은 cone만 사용한다.
+        self.declare_parameter('obstacle_class_include', 'cone')
         # 장애물로 치지 않을 클래스. 차선 세그멘테이션(lane_1/lane_2)은 박스가 화면을 가득 채워서
         # 그대로 두면 "코앞에 장애물이 있다"고 잘못 나간다.
         self.declare_parameter('obstacle_class_exclude', 'lane_1,lane_2')
@@ -201,6 +203,9 @@ class FusionVisualizerNode(Node):
             self.obstacle_selection_mode = 'visual_front'
         self.obstacle_publish_max_dist = float(
             self.get_parameter('obstacle_publish_max_dist').value)
+        self.obstacle_class_include = {
+            c.strip() for c in str(self.get_parameter('obstacle_class_include').value).split(',') if c.strip()
+        }
         self.obstacle_class_exclude = {
             c.strip() for c in str(self.get_parameter('obstacle_class_exclude').value).split(',') if c.strip()
         }
@@ -597,6 +602,10 @@ class FusionVisualizerNode(Node):
             candidates = [
                 det for det in self.last_det.detections
                 if str(getattr(det, 'class_name', '')) not in self.obstacle_class_exclude
+                and (
+                    not self.obstacle_class_include
+                    or str(getattr(det, 'class_name', '')) in self.obstacle_class_include
+                )
             ]
 
             if self.obstacle_selection_mode == 'visual_front' and candidates:
@@ -689,7 +698,13 @@ class FusionVisualizerNode(Node):
                     y2c = max(0, min(h - 1, y2))
 
                     dist_m, best_uv = (None, None)
-                    if scan_ok and len(ranges) > 0:
+                    # 차선 bbox 안의 LiDAR 점을 차선 거리로 오인하지 않도록,
+                    # 지정된 장애물 클래스(cone)에만 거리와 흰 대표점을 계산한다.
+                    measure_distance = (
+                        not self.obstacle_class_include
+                        or str(class_name) in self.obstacle_class_include
+                    )
+                    if measure_distance and scan_ok and len(ranges) > 0:
                         dist_m, best_uv = self.estimate_distance_in_bbox(
                             u_pix, v_pix, ranges, x1c, y1c, x2c, y2c
                         )
