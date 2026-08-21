@@ -21,7 +21,7 @@ rplidar_node:
 
 image_publisher_node:
   ros__parameters:
-    cam_num: 2
+    cam_num: 0
     # C920 두 대가 꽂혀 있고 모델명이 같아서 by-id로는 구분이 안 된다
     # (두 번째 카메라는 by-id 링크가 아예 안 생김 - 이름 충돌).
     # 그래서 "꽂은 USB 포트" 기준인 by-path로 전방(YOLO용) 카메라를 고정한다.
@@ -58,7 +58,7 @@ yolov8_node:
     # bbox 아래변이 화면 위쪽 30% 안에서 끝나면 버림 (지평선 위 = 하늘/먼 배경)
     min_box_bottom_ratio: 0.30
     # 클래스별 임계값 override 예시: "cone:0.60,drum:0.55"
-    class_thresholds: ""
+    class_thresholds: "car_back:0.80"
     log_filtered: true
 
 image_fusion_node:
@@ -179,7 +179,7 @@ lane_info_extractor_node:
     # YOLO 프레임 수와 무관하게 이 시간 안에 회피 차선 목표 오프셋을 만든다.
     lane_change_duration_sec: 0.8
     # 목표 오프셋에 도달한 뒤에도 이 시간 동안 유지해 실제 차선 변경을 끝낸다.
-    lane_change_hold_sec: 2.0
+    lane_change_hold_sec: 1.0
 
     image_center_x: 320
     # BEV ROI에서 카메라 영상 중앙을 추종 기준으로 사용한다.
@@ -288,10 +288,11 @@ motion_planner_node:
     # 너무 느리거나 stall(삐 소리만 나고 안 굴러감)이면 5씩 올릴 것.
     # 조향 튜닝이 끝나고 정상 주행으로 돌아갈 때는 min/max를 다시 벌릴 것. 예)
     #   base_speed: 40 / min_speed: 30 / max_speed: 55
-    base_speed: 70
-    min_speed: 70
-    max_speed: 70
+    base_speed: 50
+    min_speed: 50
+    max_speed: 50
     steer_speed_gain: 12.0         # 조향이 클수록 감속시키는 계수
+    overtake_speed: 100            # car_back 검출 후 lane_1 추월 중 PWM
 
 serial_sender_node:
   ros__parameters:

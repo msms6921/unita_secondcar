@@ -47,6 +47,7 @@ BASE_SPEED = 200                                      # 기본 주행 속도
 MIN_SPEED = 100                                      # 최소 속도 하한
 MAX_SPEED = 250                                # 최대 속도 상한
 STEER_SPEED_GAIN = 12.0                               # 조향 클수록 감속시키는 계수
+OVERTAKE_SPEED = 100                                  # lane_1 추월 중 PWM
 # ----------------------------------------------------
 
 
@@ -107,6 +108,9 @@ class UnitaPurePursuitNode(Node):
         self.min_speed = int(self.declare_parameter("min_speed", MIN_SPEED).value)
         self.max_speed = int(self.declare_parameter("max_speed", MAX_SPEED).value)
         self.steer_speed_gain = float(self.declare_parameter("steer_speed_gain", STEER_SPEED_GAIN).value)
+        self.overtake_speed = int(
+            self.declare_parameter("overtake_speed", OVERTAKE_SPEED).value)
+        self.overtaking_active = False
 
         # QoS
         self.qos_profile = QoSProfile(
@@ -125,6 +129,9 @@ class UnitaPurePursuitNode(Node):
         # Subscribers
         self.path_sub = self.create_subscription(
             PathPlanningResult, self.sub_path_topic, self.path_callback, self.qos_profile
+        )
+        self.overtaking_sub = self.create_subscription(
+            Bool, '/overtaking_active', self.overtaking_callback, self.qos_profile
         )
 
         if self.use_traffic_lidar_stop:
@@ -155,6 +162,9 @@ class UnitaPurePursuitNode(Node):
 
     def lidar_callback(self, msg: Bool):
         self.lidar_data = msg
+
+    def overtaking_callback(self, msg: Bool):
+        self.overtaking_active = msg.data
 
     # -------------------------
     # Helpers
@@ -255,8 +265,11 @@ class UnitaPurePursuitNode(Node):
         steer_cmd = steer_pp + steer_pd
         steer_cmd = clamp(steer_cmd, -self.max_steer_cmd, self.max_steer_cmd)
 
-        speed = int(self.base_speed - self.steer_speed_gain * abs(steer_cmd))
-        speed = int(clamp(speed, self.min_speed, self.max_speed))
+        if self.overtaking_active:
+            speed = self.overtake_speed
+        else:
+            speed = int(self.base_speed - self.steer_speed_gain * abs(steer_cmd))
+            speed = int(clamp(speed, self.min_speed, self.max_speed))
 
         self.publish_cmd(steer_cmd, speed, speed)
 

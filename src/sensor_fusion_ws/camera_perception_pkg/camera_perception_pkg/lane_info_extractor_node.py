@@ -19,6 +19,7 @@ from rclpy.qos import qos_profile_sensor_data
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point32
+from std_msgs.msg import Bool
 from interfaces_pkg.msg import TargetPoint, LaneInfo, DetectionArray, PathPlanningResult
 from .lib import camera_perception_func_lib as CPFL
 
@@ -129,6 +130,7 @@ class Yolov8InfoExtractor(Node):
             PathPlanningResult, 'path_planning_result', self.path_callback, self.qos_profile)
         self.publisher = self.create_publisher(LaneInfo, self.pub_topic, 10)
         self.roi_image_publisher = self.create_publisher(Image, self.roi_image_topic, 10)
+        self.overtaking_publisher = self.create_publisher(Bool, '/overtaking_active', 10)
 
         # 영상 속 라벨 위치로 현재 차선을 재판정하지 않는다. 시작 차선에서 출발해
         # 장애물 회피가 실제로 완료됐을 때만 lane_1 <-> lane_2 상태를 바꾼다.
@@ -163,6 +165,11 @@ class Yolov8InfoExtractor(Node):
         self.last_offset_update_sec = self.get_clock().now().nanoseconds / 1e9
         self.latest_path = []
         self.avoidance_count = 0
+        self.overtaking_active = False
+        self.car_back_armed = True
+        self.lane_1_missing_frames = 0
+        self.overtake_return_missing_frames = int(
+            self.declare_parameter('overtake_return_missing_frames', 6).value)
 
         # 차선 상태 전환 디바운싱용
         self.lane_change_counter = 0
@@ -184,7 +191,8 @@ class Yolov8InfoExtractor(Node):
         self.latest_path = list(zip(msg.x_points, msg.y_points))
 
     def yolov8_detections_callback(self, detection_msg: DetectionArray):
-        if len(detection_msg.detections) == 0: return
+        car_back_detected = any(
+            d.class_name == 'car_back' for d in detection_msg.detections)
 
         # 차선 정보 추출 (Localization용)
         lane_1_box = None
@@ -288,11 +296,37 @@ class Yolov8InfoExtractor(Node):
             has_lane_2 if self.current_lane_state == 'lane_1' else has_lane_1
         )
 
-        if (self.obstacle_armed and obstacle_close
-                and obstacle_in_current_lane and other_lane_available):
-            target_lane_state = (
-                'lane_1' if self.current_lane_state == 'lane_2' else 'lane_2'
-            )
+        # lane_2에서 car_back과 lane_1이 함께 보일 때 추월을 시작한다.
+        # lane_1 진입 뒤 lane_1이 연속 8프레임 사라지면 lane_2로 복귀한다.
+        overtake_target_lane = None
+        if (self.car_back_armed and car_back_detected
+                and self.current_lane_state == 'lane_2'
+                and has_lane_1 and not self.lane_change_in_progress):
+            overtake_target_lane = 'lane_1'
+            self.overtaking_active = True
+            self.car_back_armed = False
+            self.lane_1_missing_frames = 0
+            self.get_logger().warn('car_back 검출: lane_1 추월 시작')
+        elif self.overtaking_active and self.current_lane_state == 'lane_1' \
+                and not self.lane_change_in_progress:
+            self.lane_1_missing_frames = (
+                0 if has_lane_1 else self.lane_1_missing_frames + 1)
+            if (self.lane_1_missing_frames >= self.overtake_return_missing_frames
+                    and has_lane_2):
+                overtake_target_lane = 'lane_2'
+                self.overtaking_active = False
+                self.lane_1_missing_frames = 0
+                self.get_logger().warn('lane_1 8프레임 미검출: lane_2 복귀 시작')
+
+        if (not self.overtaking_active and not car_back_detected
+                and self.current_lane_state == 'lane_2'):
+            self.car_back_armed = True
+
+        if (overtake_target_lane is not None or
+                (self.obstacle_armed and obstacle_close
+                 and obstacle_in_current_lane and other_lane_available)):
+            target_lane_state = overtake_target_lane or (
+                'lane_1' if self.current_lane_state == 'lane_2' else 'lane_2')
             current_lane_cx = (
                 lane_1_cx if self.current_lane_state == 'lane_1' else lane_2_cx
             )
@@ -311,17 +345,20 @@ class Yolov8InfoExtractor(Node):
                     1.0 if direction_delta > 0.0 else -1.0)
                 self.lane_change_in_progress = True
                 self.lane_change_target_reached_sec = None
-                self.obstacle_armed = False
-                self.avoidance_count += 1
+                if overtake_target_lane is None:
+                    self.obstacle_armed = False
+                    self.avoidance_count += 1
                 self.last_lane_change_sec = now_sec
                 self.obstacle_clear_since_sec = None
-                self.tracked_obstacle_min_dist = self.obstacle_dist
-                self.tracked_obstacle_pixel_x = self.obstacle_pixel_x
+                if overtake_target_lane is None:
+                    self.tracked_obstacle_min_dist = self.obstacle_dist
+                    self.tracked_obstacle_pixel_x = self.obstacle_pixel_x
                 move_direction = (
                     '오른쪽' if self.lane_change_direction_sign > 0 else '왼쪽')
-                self.get_logger().warn(
-                    f"새 장애물 {self.obstacle_dist:.2f}m: {move_direction}으로 차선 전환 "
-                    f"({self.current_lane_state} -> {self.pending_lane_state})")
+                if overtake_target_lane is None:
+                    self.get_logger().warn(
+                        f"새 장애물 {self.obstacle_dist:.2f}m: {move_direction}으로 차선 전환 "
+                        f"({self.current_lane_state} -> {self.pending_lane_state})")
 
         distance_jump = False
         pixel_jump = False
@@ -400,6 +437,8 @@ class Yolov8InfoExtractor(Node):
             self.current_offset = 0.0
             previous_lane_state = self.current_lane_state
             self.current_lane_state = self.pending_lane_state
+            if self.overtaking_active and self.current_lane_state == 'lane_2':
+                self.overtaking_active = False
             self.get_logger().info(
                 f"차선 전환 완료: {previous_lane_state} -> {self.current_lane_state}, "
                 "새 차선 중심 추종 시작")
@@ -425,6 +464,10 @@ class Yolov8InfoExtractor(Node):
                 self.get_logger().info(
                     f"현재 차선 {self.active_lane_index} 유지, 다음 장애물 감지 준비 "
                     f"({rearm_reason})")
+
+        overtake_msg = Bool()
+        overtake_msg.data = self.overtaking_active
+        self.overtaking_publisher.publish(overtake_msg)
 
         # CPFL.draw_edges()는 detections[0].mask로 이미지 크기를 잡는다. 우리 쪽 yolov8_node는
         # cone/car_back(detect 모델, 마스크 없음)과 lane_seg를 합쳐서 발행하므로, 첫 검출이

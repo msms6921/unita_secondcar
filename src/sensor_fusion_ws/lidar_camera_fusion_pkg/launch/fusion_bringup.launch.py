@@ -85,6 +85,7 @@ def generate_launch_description():
     )
     model_path = ','.join([
         os.path.join(camera_models_dir, 'best_cone.pt'),
+        os.path.join(camera_models_dir, 'car_back.pt'),
         os.path.join(camera_models_dir, 'lane_seg.pt'),
     ])
 
