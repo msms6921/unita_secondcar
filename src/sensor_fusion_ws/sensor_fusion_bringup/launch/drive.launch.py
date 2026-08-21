@@ -103,7 +103,7 @@ def generate_launch_description():
             description='Arduino 제어 시리얼 포트'),
         DeclareLaunchArgument(
             'driving_direction', default_value='clockwise',
-            description='주행 방향: clockwise 또는 counterclockwise'),
+            description='호환용(현재 회피 방향은 검출된 두 차선 위치로 자동 결정)'),
         DeclareLaunchArgument(
             'enable_serial', default_value=enable_serial,
             description='아두이노로 실제 제어 명령을 보낼지 여부. false면 명령 토픽까지만 확인'),

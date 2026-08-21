@@ -162,8 +162,7 @@ lane_info_extractor_node:
     initial_lane_class: 'lane_2'
 
     lane_width_pixel: 280.0
-    # clockwise: 오른쪽으로 회피 후 왼쪽 복귀
-    # counterclockwise: 왼쪽으로 회피 후 오른쪽 복귀
+    # 이전 실행 방식과의 호환용. 현재 회피 방향은 실제 lane_1/lane_2의 x 위치로 결정한다.
     driving_direction: 'clockwise'
     # 현재 차선의 새 장애물이 이 거리 안에 들어오면 반대 차선으로 전환한다.
     avoidance_trigger_dist: 2.0
@@ -220,7 +219,7 @@ lane_info_extractor_node:
     # BEV 스케일로 독립 계산한 값(약 212)과도 일치한다.
     lane_width_for_center: 196
     # 최종 주행 경로 평행 이동(+오른쪽 / -왼쪽). 현재 카메라/BEV 기준 약 30px = 10cm.
-    lane_center_bias_px: 60.0
+    lane_center_bias_px: 0.0
 
 path_planner_node:
   ros__parameters:
@@ -289,9 +288,9 @@ motion_planner_node:
     # 너무 느리거나 stall(삐 소리만 나고 안 굴러감)이면 5씩 올릴 것.
     # 조향 튜닝이 끝나고 정상 주행으로 돌아갈 때는 min/max를 다시 벌릴 것. 예)
     #   base_speed: 40 / min_speed: 30 / max_speed: 55
-    base_speed: 50
-    min_speed: 50
-    max_speed: 50
+    base_speed: 70
+    min_speed: 70
+    max_speed: 70
     steer_speed_gain: 12.0         # 조향이 클수록 감속시키는 계수
 
 serial_sender_node:
